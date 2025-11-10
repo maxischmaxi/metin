@@ -1,185 +1,126 @@
 # MMORPG - Rust & Bevy Game
 
-Ein grundlegendes MMORPG implementiert mit Rust und der Bevy Engine.
+Ein vollständiges MMORPG mit Rust, Bevy Engine, SQLite DB, JWT Auth und UDP Networking.
 
-## Projektstruktur
-
-Das Projekt verwendet ein Monorepo mit drei Crates:
-
-```
-game/
-├── server/     # Game Server
-├── client/     # Game Client (Bevy)
-└── shared/     # Gemeinsame Datenstrukturen
-```
-
-## Features
-
-### Implementiert ✅
-
-- **Character-System**
-  - Character-Erstellung mit Name und Klasse (Warrior, Mage, Rogue)
-  - Character-Auswahl-Menü
-  
-- **Gameplay**
-  - 3D-Spielwelt mit Terrain
-  - Player-Spawn in der Map
-  - WASD-Steuerung für Bewegung
-  - Orbit-Camera (Rechte Maustaste zum Rotieren, Mausrad zum Zoomen)
-  
-- **UI-System**
-  - Character-Erstellungsmenü
-  - Character-Auswahlmenü
-  - Einstellungsmenü (Grafik & Audio)
-  - In-Game-UI mit Steuerungshinweisen
-
-- **Einstellungen**
-  - VSync an/aus
-  - Vollbild-Modus
-  - Audio-Lautstärkeregler (Master, Musik, SFX)
-
-### Geplant 🚧
-
-- Multiplayer-Networking (aktuell offline)
-- Combat-System
-- Inventory-System
-- NPC & Quests
-
-## Installation & Build
-
-### Voraussetzungen
-
-- Rust (neueste stabile Version)
-- Cargo
-
-### Compilieren
+## 🚀 Quick Start
 
 ```bash
-# Gesamtes Workspace bauen
-cargo build --release
-
-# Nur Client bauen
-cargo build --release -p client
-
-# Nur Server bauen
-cargo build --release -p server
+./run_server.sh  # Port 5000
+./run_client.sh  # Bevy Client
 ```
 
-## Ausführen
+## 📁 Struktur
 
-### Schnellstart
+```
+server/  → Auth (JWT+bcrypt), DB (SQLite), UDP Server
+client/  → Bevy 0.14, UI, 3D-Welt, Collision
+shared/  → Messages, CharacterData, Skills
+```
+
+## ✅ Implementierte Features
+
+### Core Systems
+- **Auth:** Registration, Login (JWT 24h), Session Management
+- **Database:** SQLite mit sqlx, Users & Characters Tabellen, Migrations
+- **Networking:** UDP Client-Server (bincode), Real-time Updates
+
+### Character System  
+- **4 Klassen:** Krieger, Ninja, Sura, Schamane (Metin2-Style)
+- **8 Spezialisierungen:** 2 pro Klasse (PvM/PvP)
+- **40 Skills:** 5 Skills pro Spec, freigeschaltet bei Lvl 5/10/15/25/40
+- **Level 1-100:** Exponentielle XP-Kurve (100 * level^2.8)
+- **Klassenspezifische Stats:** HP/Mana/Stamina pro Level unterschiedlich
+
+### Gameplay
+- **3D-Welt:** PBR Rendering, Orbit Camera (RMB+Maus, Mausrad Zoom)
+- **Movement:** WASD kamera-relativ, Shift-Sprint
+- **Collision:** Auto-Collider System mit 3 Detail-Levels (Low/Medium/High)
+  - Performance Cache (35% faster)
+  - LOD System (2-3x faster mit vielen Objekten)
+  - Visual Debug (F1-F4 Wireframes)
+- **Free Camera:** F5 Dev-Mode, WASD+Space/Ctrl, Shift-Boost
+- **NPCs:** "Meister der Künste" bei (5,1,5), 3m Interaction Range
+
+### UI System
+- **States:** Login → CharSelect → CharCreate/InGame → Paused → Settings
+- **UI Stack:** Priority-basiertes Layer-Management (ESC-Key handling)
+- **Nameplate:** 3D→2D Konvertierung, Level + Name über Spieler
+- **Dev Tools:** F3 Panel, K-Taste (+1000 XP), +/-Level Buttons
+
+## 🎮 Steuerung
+
+**In-Game:**
+- WASD: Bewegen | RMB+Maus: Kamera | Mausrad: Zoom
+- K: +1000 XP (Dev) | F3: Dev Panel | F5: Free Cam
+- ESC: Pause Menu | F1-F4: Collision Debug
+
+**NPC Interaction:**
+- Linksklick auf NPC (<3m) → Dialog
+- Bei Level 5+: Spezialisierung wählen (permanent!)
+
+## 🗄️ Datenbank Schema
+
+```sql
+users: id, username(unique), password_hash, email, created_at
+characters: id, user_id, name(unique), class, level, experience, 
+            specialization, pos_x/y/z, skin/hair_color, created_at
+```
+
+## 🔧 Entwicklung
+
+**Dependencies:**
+- Bevy 0.14, sqlx 0.8 (SQLite), bcrypt 0.15, jsonwebtoken 9
+- parry3d 0.17 (Collision), rayon (Parallelization)
+
+**Architecture:**
+- Client: ECS mit Plugins (Player, Camera, UI, Collision, Interaction)
+- Server: Async Tokio, Auth Module, DB Module
+- Shared: Messages (ClientMessage, ServerMessage), Enums (CharacterClass, Specialization, SkillId)
+
+**Key Files:**
+- `client/src/collision.rs` (1850 lines) - Auto-Collider System
+- `server/src/auth/` - Password, JWT, Session, Handlers
+- `server/src/db/` - Users, Characters CRUD
+- `shared/src/lib.rs` - 40 Skills, 8 Specs, Messages
+
+## 📚 Dokumentation (Archiviert)
+
+**Aktuelle Systeme:** Siehe AGENTS.md (vollständige Projekt-Dokumentation)
+
+**Legacy Docs (für Details):**
+- DATABASE_PHASE1-3.md - DB Setup & Auth
+- LEVEL_SYSTEM.md - XP-Kurve & Stats
+- SKILL_SYSTEM_DESIGN.md - Alle 40 Skills detailliert
+- COLLISION_README.md - Auto-Collider API
+- NPC_IMPLEMENTATION_SUMMARY.md - NPC System
+- UI_STACK_* - UI Layer Management
+- SPECIALIZATION_QUICKSTART.md - Spec-Wahl Anleitung
+
+## ⚙️ Build & Test
 
 ```bash
-# Client starten (empfohlen)
-./run_client.sh
-
-# Oder Server starten (optional, für zukünftige Multiplayer-Features)
-./run_server.sh
+cargo build --release           # Beide
+cargo test -p server            # Server Tests (19 passed)
+RUST_LOG=info ./run_server.sh  # Mit Logs
 ```
 
-### Manuell starten
+**Windows:** Siehe WINDOWS_BUILD.md
 
-```bash
-# Client starten
-cargo run --release -p client
+## 🎯 Status
 
-# Server starten (vorbereitet für zukünftige Networking-Features)
-RUST_LOG=info cargo run --release -p server
-```
+- **Kompiliert:** ✅ Client & Server Release
+- **Tests:** ✅ 19/19 Auth Tests, 3/3 DB Tests
+- **Features:** ✅ Auth, DB, Level, Skills, Collision, NPC
+- **Production:** ⚠️ JWT Secret hardcoded, keine TLS
 
-## Steuerung
+## 📝 Schnellreferenz
 
-### Menüs
-- **Linke Maustaste**: Buttons klicken
-- **ESC**: Zum Einstellungsmenü (im Spiel)
-- **Quit Game Button**: Spiel beenden (im Hauptmenü und Einstellungen)
+| Taste | Funktion | Taste | Funktion |
+|-------|----------|-------|----------|
+| WASD | Bewegen | K | +1000 XP |
+| RMB | Kamera | F3 | Dev Panel |
+| ESC | Pause | F5 | Free Cam |
+| F1-F4 | Collision Debug | 1-5 | Skills (geplant) |
 
-### Character-Erstellung
-- **Buchstaben A-Z**: Name eingeben
-- **Zahlen 0-9**: Zahlen hinzufügen
-- **Shift + Buchstabe**: Großbuchstaben
-- **Space**: Leerzeichen
-- **Backspace**: Zeichen löschen
-- **Linke Maustaste**: Klassen-Buttons und Erstellen
-
-### Im Spiel
-- **W/A/S/D**: Player bewegen
-- **Rechte Maustaste gedrückt + Mausbewegung**: Kamera rotieren
-- **Mausrad**: Kamera Zoom
-- **ESC**: Einstellungsmenü öffnen
-
-## Technologie-Stack
-
-- **Engine**: Bevy 0.14
-- **Sprache**: Rust (Edition 2021)
-- **Serialisierung**: Serde + Bincode
-- **Networking**: UDP-basiert (in Vorbereitung)
-
-## Architektur
-
-### Client
-
-Der Client nutzt das Bevy ECS-System mit folgenden Plugins:
-
-- `PlayerPlugin`: Player-Logik und Bewegung
-- `CameraPlugin`: Orbit-Camera-System
-- `NetworkingPlugin`: Netzwerk-Kommunikation (simplified)
-- `CharacterSelectionPlugin`: Character-Auswahl-UI
-- `CharacterCreationPlugin`: Character-Erstellung-UI
-- `GameUIPlugin`: In-Game-UI
-- `SettingsPlugin`: Einstellungsmenü
-
-### Server
-
-Einfacher UDP-basierter Game Server:
-
-- Empfängt Client-Nachrichten
-- Verwaltet Player-States
-- Synchronisiert Spielwelt (in Entwicklung)
-
-### Shared
-
-Gemeinsame Datenstrukturen zwischen Client und Server:
-
-- `CharacterData`: Character-Informationen
-- `ClientMessage`: Client → Server Nachrichten
-- `ServerMessage`: Server → Client Nachrichten
-- `MMOSettings`: Spiel-Einstellungen
-
-## Game States
-
-Der Client verwendet folgende Game States:
-
-1. `CharacterSelection`: Hauptmenü mit Character-Auswahl
-2. `CharacterCreation`: Character-Erstellungsbildschirm
-3. `InGame`: Aktives Gameplay
-4. `Settings`: Einstellungsmenü
-
-## Entwicklung
-
-### Code-Struktur
-
-```
-client/src/
-├── main.rs              # Entry point
-├── camera.rs            # Orbit camera system
-├── player.rs            # Player movement & logic
-├── networking.rs        # Network client
-└── ui/
-    ├── mod.rs           # UI common code
-    ├── character_creation.rs
-    ├── character_selection.rs
-    ├── game_ui.rs
-    └── settings.rs
-```
-
-### Neues Feature hinzufügen
-
-1. Gemeinsame Datenstrukturen in `shared/src/lib.rs` definieren
-2. Server-Logik in `server/src/main.rs` implementieren
-3. Client-Plugin in `client/src/` erstellen
-4. Plugin in `client/src/main.rs` registrieren
-
-## Lizenz
-
-Dieses Projekt ist ein Beispielprojekt für Lernzwecke.
+**Klassen:** Krieger (Tank) • Ninja (Agil) • Sura (Balanced) • Schamane (Healer)
+**Specs:** 2 pro Klasse, wählbar ab Lvl 5 (permanent!)

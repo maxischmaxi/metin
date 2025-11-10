@@ -3,7 +3,7 @@ use crate::GameState;
 use crate::camera::OrbitCamera;
 use crate::auth_state::SpawnPosition;
 use crate::networking::NetworkClient;
-use crate::collision::{Collider, ColliderShape, CollisionType, CollisionLayer, CollidingWith, CollisionPushback};
+use crate::collision::{Collider, ColliderShape, CollisionType, CollisionLayer, CollidingWith, CollisionPushback, AutoCollider, CollisionDetail, PreferredShape, CollisionLOD};
 use crate::GameFont;
 use shared::ClientMessage;
 use std::time::Duration;
@@ -155,7 +155,7 @@ fn setup_player(
             GameWorld,
         ));
         
-        // Wall at (0, 0, -8)
+        // Wall at (0, 0, -8) - Using AutoCollider (Low Detail)
         commands.spawn((
             PbrBundle {
                 mesh: meshes.add(Cuboid::new(6.0, 2.0, 0.5)),
@@ -163,14 +163,126 @@ fn setup_player(
                 transform: Transform::from_xyz(0.0, 1.0, -8.0),
                 ..default()
             },
-            Collider {
-                shape: ColliderShape::Box {
-                    half_extents: Vec3::new(3.0, 1.0, 0.25),
-                },
+            AutoCollider {
+                detail: CollisionDetail::Low,
                 collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,  // Phase 3
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::Box),
             },
-            CollidingWith::default(),
+            GameWorld,
+        ));
+        
+        // Test Obstacle with Medium Detail (Octahedron shape)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap()), // More complex mesh
+                material: materials.add(Color::srgb(0.8, 0.3, 0.3)),
+                transform: Transform::from_xyz(5.0, 1.0, 0.0),
+                ..default()
+            },
+            AutoCollider {
+                detail: CollisionDetail::Medium,
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::ConvexHull),
+            },
+            GameWorld,
+        ));
+        
+        // Test Obstacle with High Detail (parry3d Quickhull)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()), // Even more complex (162 vertices)
+                material: materials.add(Color::srgb(0.3, 0.8, 0.3)),
+                transform: Transform::from_xyz(-5.0, 1.0, 0.0),
+                ..default()
+            },
+            AutoCollider {
+                detail: CollisionDetail::High,
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::ConvexHull),
+            },
+            GameWorld,
+        ));
+        
+        // Test Obstacle with Very High Detail (ico sphere level 4 - very dense mesh)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(0.8).mesh().ico(4).unwrap()), // 642 vertices!
+                material: materials.add(Color::srgb(0.8, 0.8, 0.3)),
+                transform: Transform::from_xyz(0.0, 1.0, 5.0),
+                ..default()
+            },
+            AutoCollider {
+                detail: CollisionDetail::High,
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::ConvexHull),
+            },
+            GameWorld,
+        ));
+        
+        // ==================== PHASE 5: LOD TEST OBJECTS ====================
+        
+        // LOD Object 1: Near spawn (starts High, switches to Medium/Low when walking away)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()),
+                material: materials.add(Color::srgb(1.0, 0.5, 0.0)), // Orange
+                transform: Transform::from_xyz(8.0, 1.0, 0.0),
+                ..default()
+            },
+            AutoCollider {
+                detail: CollisionDetail::Medium, // Will switch based on distance
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::ConvexHull),
+            },
+            CollisionLOD::new(), // Use default thresholds (High < 10m, Medium < 30m)
+            GameWorld,
+        ));
+        
+        // LOD Object 2: Medium distance (starts Medium)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()),
+                material: materials.add(Color::srgb(0.5, 0.0, 1.0)), // Purple
+                transform: Transform::from_xyz(15.0, 1.0, 0.0),
+                ..default()
+            },
+            AutoCollider {
+                detail: CollisionDetail::Medium,
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::ConvexHull),
+            },
+            CollisionLOD::with_distances(10.0, 30.0), // Custom thresholds
+            GameWorld,
+        ));
+        
+        // LOD Object 3: Far distance (starts Low, switches to Medium/High when approaching)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()),
+                material: materials.add(Color::srgb(0.0, 1.0, 1.0)), // Cyan
+                transform: Transform::from_xyz(35.0, 1.0, 0.0),
+                ..default()
+            },
+            AutoCollider {
+                detail: CollisionDetail::Low,
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,
+                padding: 0.0,
+                preferred_shape: Some(PreferredShape::ConvexHull),
+            },
+            CollisionLOD::new(),
             GameWorld,
         ));
 
@@ -210,7 +322,13 @@ fn player_movement(
     time: Res<Time>,
     mut player_query: Query<(&mut Transform, &Player)>,
     camera_query: Query<&OrbitCamera>,
+    free_cam_state: Res<crate::camera::FreeCamState>,
 ) {
+    // Don't move player if free cam is active
+    if free_cam_state.active {
+        return;
+    }
+    
     // Get camera yaw for rotation
     let camera_yaw = camera_query
         .get_single()

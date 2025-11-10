@@ -9,3 +9,4 @@ bevy.workspace = true
 serde.workspace = true
 bincode.workspace = true
 rayon = "1.10"  # Phase 4: Multi-Threading (Linux & Windows compatible)
+parry3d = "0.17"  # Phase 3: High Detail Convex Hull (using latest stable version)

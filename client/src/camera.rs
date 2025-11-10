@@ -8,13 +8,17 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SavedCameraState>()
+            .init_resource::<FreeCamState>()
             .add_systems(Startup, setup_camera)
             .add_systems(OnEnter(GameState::InGame), switch_to_3d_camera)
             .add_systems(OnExit(GameState::InGame), (save_camera_state, switch_to_ui_camera).chain())
             .add_systems(Update, (
+                toggle_free_cam,
                 orbit_camera_mouse,
                 orbit_camera_zoom,
                 update_camera_focus,
+                free_cam_movement,
+                free_cam_mouse,
             ).run_if(in_state(GameState::InGame)));
     }
 }
@@ -47,8 +51,22 @@ struct SavedCameraState {
     camera: Option<OrbitCamera>,
 }
 
+// Resource to track if free cam is active
+#[derive(Resource, Default)]
+pub struct FreeCamState {
+    pub active: bool,
+    pub(crate) saved_orbit: Option<OrbitCamera>,
+}
+
 #[derive(Component)]
 struct MainCamera;
+
+#[derive(Component)]
+struct FreeCam {
+    speed: f32,
+    speed_boost: f32,
+    sensitivity: f32,
+}
 
 // Setup main camera at startup
 fn setup_camera(mut commands: Commands) {
@@ -170,11 +188,148 @@ fn update_camera_transform(orbit: &OrbitCamera, transform: &mut Transform) {
 fn update_camera_focus(
     player_query: Query<&Transform, (With<Player>, Without<OrbitCamera>)>,
     mut camera_query: Query<(&mut OrbitCamera, &mut Transform), Without<Player>>,
+    free_cam_state: Res<FreeCamState>,
 ) {
+    // Don't update camera focus if free cam is active
+    if free_cam_state.active {
+        return;
+    }
+    
     if let Ok(player_transform) = player_query.get_single() {
         for (mut orbit, mut camera_transform) in camera_query.iter_mut() {
             orbit.focus = player_transform.translation;
             update_camera_transform(&orbit, &mut camera_transform);
+        }
+    }
+}
+
+/// Toggle between orbit camera and free cam mode with F5 key
+fn toggle_free_cam(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut free_cam_state: ResMut<FreeCamState>,
+    mut commands: Commands,
+    mut camera_query: Query<(Entity, &mut Transform, Option<&OrbitCamera>, Option<&FreeCam>), With<MainCamera>>,
+) {
+    if !keyboard.just_pressed(KeyCode::F5) {
+        return;
+    }
+    
+    for (entity, mut transform, orbit_cam, _free_cam) in camera_query.iter_mut() {
+        if free_cam_state.active {
+            // Switch back to orbit camera
+            info!("🎥 Free Cam deactivated - switching to Orbit Camera");
+            
+            if let Some(saved_orbit) = free_cam_state.saved_orbit.take() {
+                // Restore orbit camera
+                commands.entity(entity).remove::<FreeCam>();
+                commands.entity(entity).insert(saved_orbit.clone());
+                update_camera_transform(&saved_orbit, &mut transform);
+            }
+            
+            free_cam_state.active = false;
+        } else {
+            // Switch to free cam
+            info!("🎥 Free Cam activated - use WASD + Mouse to fly (Shift for boost)");
+            
+            // Save current orbit camera state
+            if let Some(orbit_cam) = orbit_cam {
+                free_cam_state.saved_orbit = Some(orbit_cam.clone());
+                commands.entity(entity).remove::<OrbitCamera>();
+            }
+            
+            // Add free cam component
+            commands.entity(entity).insert(FreeCam {
+                speed: 5.0,
+                speed_boost: 3.0,
+                sensitivity: 0.001,  // Reduced from 0.003 for less sensitivity
+            });
+            
+            free_cam_state.active = true;
+        }
+    }
+}
+
+/// WASD movement for free cam
+fn free_cam_movement(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut camera_query: Query<(&mut Transform, &FreeCam)>,
+) {
+    for (mut transform, free_cam) in camera_query.iter_mut() {
+        let mut velocity = Vec3::ZERO;
+        let forward = *transform.forward();
+        let right = *transform.right();
+        let up = Vec3::Y;
+        
+        // WASD movement
+        if keyboard.pressed(KeyCode::KeyW) {
+            velocity += forward;
+        }
+        if keyboard.pressed(KeyCode::KeyS) {
+            velocity -= forward;
+        }
+        if keyboard.pressed(KeyCode::KeyD) {
+            velocity += right;
+        }
+        if keyboard.pressed(KeyCode::KeyA) {
+            velocity -= right;
+        }
+        
+        // Up/Down movement (Space/Ctrl)
+        if keyboard.pressed(KeyCode::Space) {
+            velocity += up;
+        }
+        if keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight) {
+            velocity -= up;
+        }
+        
+        // Normalize to prevent faster diagonal movement
+        if velocity.length() > 0.0 {
+            velocity = velocity.normalize();
+        }
+        
+        // Apply speed boost if Shift is pressed
+        let speed = if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) {
+            free_cam.speed * free_cam.speed_boost
+        } else {
+            free_cam.speed
+        };
+        
+        // Apply movement
+        transform.translation += velocity * speed * time.delta_seconds();
+    }
+}
+
+/// Mouse look for free cam
+fn free_cam_mouse(
+    mut mouse_motion: EventReader<MouseMotion>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut camera_query: Query<(&mut Transform, &FreeCam)>,
+) {
+    // Only rotate when right mouse button is held (same as orbit cam)
+    if !mouse_buttons.pressed(MouseButton::Right) {
+        return;
+    }
+    
+    let mut delta = Vec2::ZERO;
+    for motion in mouse_motion.read() {
+        delta += motion.delta;
+    }
+    
+    if delta.length_squared() > 0.0 {
+        for (mut transform, free_cam) in camera_query.iter_mut() {
+            // Get current rotation
+            let (mut yaw, mut pitch, _roll) = transform.rotation.to_euler(EulerRot::YXZ);
+            
+            // Apply mouse delta
+            yaw -= delta.x * free_cam.sensitivity;
+            pitch -= delta.y * free_cam.sensitivity;
+            
+            // Clamp pitch to prevent gimbal lock
+            pitch = pitch.clamp(-1.5, 1.5);
+            
+            // Apply new rotation
+            transform.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
         }
     }
 }

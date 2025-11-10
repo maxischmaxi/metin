@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::render::mesh::VertexAttributeValues;  // For mesh extraction
 use crate::GameState;
 use std::collections::HashMap;
 use rayon::prelude::*;  // Phase 4: Multi-Threading
@@ -10,14 +11,21 @@ impl Plugin for CollisionPlugin {
     fn build(&self, app: &mut App) {
         app
             .init_resource::<SpatialGrid>()  // Phase 3: Spatial Partitioning
+            .init_resource::<CollisionDebugConfig>()  // Phase 6: Visual Debugging
             .add_event::<CollisionStarted>()
             .add_event::<CollisionEnded>()
             .add_event::<TriggerEntered>()
             .add_systems(Update, (
-                update_spatial_grid,      // Phase 3: Update grid first
-                detect_collisions,
+                update_collision_lod,     // Phase 5: Update LOD based on distance
+                generate_colliders,       // Auto-generate colliders from meshes
+                create_collision_caches,  // Phase 4: Create cache for new colliders
+                update_collision_caches,  // Phase 4: Update cache when transform changes
+                update_spatial_grid,      // Update spatial grid
+                detect_collisions,        // Detect collisions (uses cache for broad-phase)
                 update_colliding_with,
                 resolve_collisions,
+                toggle_collision_debug,   // Phase 6: F1 to toggle debug view
+                draw_collision_debug,     // Phase 6: Draw debug wireframes
             ).chain().run_if(in_state(GameState::InGame)));
     }
 }
@@ -136,6 +144,119 @@ impl Default for CollisionPushback {
     }
 }
 
+// ==================== PHASE 4: COLLISION CACHE ====================
+
+/// Cache for fast collision broad-phase checks
+/// Only updates when Transform changes, avoiding recalculation every frame
+#[derive(Component, Debug, Clone)]
+pub struct CollisionCache {
+    /// Bounding sphere (center in local space, radius)
+    pub bounding_sphere: (Vec3, f32),
+    
+    /// Axis-Aligned Bounding Box (min, max in world space)
+    pub aabb: (Vec3, Vec3),
+    
+    /// Last known world position (to detect Transform changes)
+    pub last_position: Vec3,
+    
+    /// Last known rotation (to detect Transform changes)
+    pub last_rotation: Quat,
+}
+
+impl CollisionCache {
+    /// Create cache from collider shape
+    pub fn from_shape(shape: &ColliderShape, position: Vec3, rotation: Quat) -> Self {
+        let (local_center, radius) = match shape {
+            ColliderShape::Cylinder { radius, height } => {
+                let center = Vec3::new(0.0, height / 2.0, 0.0);
+                let r = radius.max(height / 2.0);
+                (center, r)
+            }
+            ColliderShape::Sphere { radius } => {
+                (Vec3::ZERO, *radius)
+            }
+            ColliderShape::Box { half_extents } => {
+                let center = Vec3::ZERO;
+                let r = half_extents.length();
+                (center, r)
+            }
+        };
+        
+        // Calculate world-space AABB
+        let aabb = Self::calculate_aabb(shape, position, rotation);
+        
+        Self {
+            bounding_sphere: (local_center, radius),
+            aabb,
+            last_position: position,
+            last_rotation: rotation,
+        }
+    }
+    
+    /// Calculate AABB from shape and transform
+    fn calculate_aabb(shape: &ColliderShape, position: Vec3, rotation: Quat) -> (Vec3, Vec3) {
+        match shape {
+            ColliderShape::Cylinder { radius, height } => {
+                // Approximate cylinder as box for AABB
+                let half_extents = Vec3::new(*radius, height / 2.0, *radius);
+                let rotated = rotation.mul_vec3(half_extents).abs();
+                (position - rotated, position + rotated)
+            }
+            ColliderShape::Sphere { radius } => {
+                let r = Vec3::splat(*radius);
+                (position - r, position + r)
+            }
+            ColliderShape::Box { half_extents } => {
+                let rotated = rotation.mul_vec3(*half_extents).abs();
+                (position - rotated, position + rotated)
+            }
+        }
+    }
+    
+    /// Update cache with new transform
+    pub fn update(&mut self, shape: &ColliderShape, position: Vec3, rotation: Quat) {
+        self.aabb = Self::calculate_aabb(shape, position, rotation);
+        self.last_position = position;
+        self.last_rotation = rotation;
+    }
+    
+    /// Check if transform has changed (needs cache update)
+    pub fn needs_update(&self, position: Vec3, rotation: Quat) -> bool {
+        (self.last_position - position).length_squared() > 0.0001
+            || self.last_rotation.angle_between(rotation) > 0.001
+    }
+    
+    /// Get world-space bounding sphere center
+    pub fn world_bounding_sphere_center(&self, position: Vec3, rotation: Quat) -> Vec3 {
+        position + rotation.mul_vec3(self.bounding_sphere.0)
+    }
+    
+    /// Get bounding sphere radius
+    pub fn bounding_sphere_radius(&self) -> f32 {
+        self.bounding_sphere.1
+    }
+    
+    /// Fast AABB overlap test
+    pub fn aabb_overlaps(&self, other: &CollisionCache) -> bool {
+        let (min_a, max_a) = self.aabb;
+        let (min_b, max_b) = other.aabb;
+        
+        max_a.x >= min_b.x && min_a.x <= max_b.x
+            && max_a.y >= min_b.y && min_a.y <= max_b.y
+            && max_a.z >= min_b.z && min_a.z <= max_b.z
+    }
+    
+    /// Fast sphere overlap test (broad-phase)
+    pub fn sphere_overlaps(&self, position_a: Vec3, rotation_a: Quat, other: &CollisionCache, position_b: Vec3, rotation_b: Quat) -> bool {
+        let center_a = self.world_bounding_sphere_center(position_a, rotation_a);
+        let center_b = other.world_bounding_sphere_center(position_b, rotation_b);
+        let distance_sq = (center_a - center_b).length_squared();
+        let combined_radius = self.bounding_sphere_radius() + other.bounding_sphere_radius();
+        
+        distance_sq < combined_radius * combined_radius
+    }
+}
+
 /// Event sent when collision starts
 #[derive(Event, Debug)]
 pub struct CollisionStarted {
@@ -165,6 +286,669 @@ struct CollisionInfo {
     penetration_depth: f32,
     normal: Vec3, // Points from A to B
     contact_point: Vec3,
+}
+
+// ==================== AUTO-COLLIDER SYSTEM (Phase 1) ====================
+
+/// Collision Detail Level (LOD for collision shapes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionDetail {
+    /// Coarse collision (Bounding Box/Sphere)
+    /// Performance: Best
+    /// Accuracy: Lowest
+    /// Use Case: Many objects, far away, simple shapes
+    Low,
+    
+    /// Medium collision (Simplified Hull, few vertices)
+    /// Performance: Medium
+    /// Accuracy: Medium
+    /// Use Case: Standard objects, normal distance
+    Medium,
+    
+    /// Detailed collision (Convex Hull, many vertices)
+    /// Performance: Slow
+    /// Accuracy: Highest
+    /// Use Case: Important objects, near player, complex shapes
+    High,
+}
+
+/// Preferred shape strategy for auto-generation
+#[derive(Debug, Clone, Copy)]
+pub enum PreferredShape {
+    /// Always use Bounding Box (fast, inaccurate)
+    Box,
+    
+    /// Always use Sphere (very fast, very inaccurate)
+    Sphere,
+    
+    /// Use Convex Hull (slow, accurate)
+    ConvexHull,
+    
+    /// Automatically choose best shape
+    Auto,
+}
+
+/// Component for automatic collision generation from mesh
+#[derive(Component, Clone)]
+pub struct AutoCollider {
+    /// Which detail level to use
+    pub detail: CollisionDetail,
+    
+    /// Collision type (Dynamic, Static, Trigger)
+    pub collision_type: CollisionType,
+    
+    /// Collision layer
+    pub layer: CollisionLayer,
+    
+    /// Optional: Manual padding (enlarges/shrinks collision)
+    pub padding: f32,
+    
+    /// Optional: Which shape strategy to prefer
+    pub preferred_shape: Option<PreferredShape>,
+}
+
+impl Default for AutoCollider {
+    fn default() -> Self {
+        Self {
+            detail: CollisionDetail::Medium,
+            collision_type: CollisionType::Static,
+            layer: CollisionLayer::World,
+            padding: 0.0,
+            preferred_shape: Some(PreferredShape::Auto),
+        }
+    }
+}
+
+// ==================== PHASE 5: LOD SYSTEM ====================
+
+/// Level-of-Detail configuration for collision shapes
+/// Automatically switches collision detail based on distance to camera
+#[derive(Component, Clone, Debug)]
+pub struct CollisionLOD {
+    /// Enable automatic LOD switching
+    pub auto_switch: bool,
+    
+    /// Distance thresholds [High, Medium, Low]
+    /// - Distance < distances[0] = High Detail
+    /// - Distance < distances[1] = Medium Detail
+    /// - Distance >= distances[1] = Low Detail
+    pub distances: [f32; 2],
+    
+    /// Hysteresis (prevents flickering at boundaries)
+    /// Switch threshold is increased by this amount when switching back
+    pub hysteresis: f32,
+    
+    /// Last known detail level (for change detection)
+    last_detail: CollisionDetail,
+}
+
+impl CollisionLOD {
+    /// Create LOD with default distances
+    /// High < 10m, Medium < 30m, Low >= 30m
+    pub fn new() -> Self {
+        Self {
+            auto_switch: true,
+            distances: [10.0, 30.0],
+            hysteresis: 2.0,
+            last_detail: CollisionDetail::Medium,
+        }
+    }
+    
+    /// Create LOD with custom distances
+    pub fn with_distances(high_threshold: f32, medium_threshold: f32) -> Self {
+        Self {
+            auto_switch: true,
+            distances: [high_threshold, medium_threshold],
+            hysteresis: 2.0,
+            last_detail: CollisionDetail::Medium,
+        }
+    }
+    
+    /// Create LOD with custom distances and hysteresis
+    pub fn with_hysteresis(high_threshold: f32, medium_threshold: f32, hysteresis: f32) -> Self {
+        Self {
+            auto_switch: true,
+            distances: [high_threshold, medium_threshold],
+            hysteresis,
+            last_detail: CollisionDetail::Medium,
+        }
+    }
+    
+    /// Determine detail level from distance
+    pub fn detail_for_distance(&mut self, distance: f32) -> CollisionDetail {
+        // Apply hysteresis to prevent flickering
+        let (high_threshold, medium_threshold) = match self.last_detail {
+            CollisionDetail::High => {
+                // When at High, make it harder to switch to Medium
+                (self.distances[0] + self.hysteresis, self.distances[1])
+            }
+            CollisionDetail::Medium => {
+                // When at Medium, make it harder to switch in either direction
+                (self.distances[0] - self.hysteresis, self.distances[1] + self.hysteresis)
+            }
+            CollisionDetail::Low => {
+                // When at Low, make it harder to switch to Medium
+                (self.distances[0], self.distances[1] - self.hysteresis)
+            }
+        };
+        
+        let new_detail = if distance < high_threshold {
+            CollisionDetail::High
+        } else if distance < medium_threshold {
+            CollisionDetail::Medium
+        } else {
+            CollisionDetail::Low
+        };
+        
+        self.last_detail = new_detail;
+        new_detail
+    }
+    
+    /// Disable automatic switching
+    pub fn disable(&mut self) {
+        self.auto_switch = false;
+    }
+    
+    /// Enable automatic switching
+    pub fn enable(&mut self) {
+        self.auto_switch = true;
+    }
+}
+
+impl Default for CollisionLOD {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generated collider (created at runtime from mesh)
+#[derive(Component, Clone)]
+pub struct GeneratedCollider {
+    /// The generated shape
+    pub shape: GeneratedShape,
+    
+    /// Source mesh it was generated from
+    pub source_mesh: Handle<Mesh>,
+    
+    /// Which detail level was used
+    pub detail_used: CollisionDetail,
+}
+
+/// Generated collision shapes
+#[derive(Debug, Clone)]
+pub enum GeneratedShape {
+    /// Simple Bounding Box (6 faces)
+    BoundingBox { min: Vec3, max: Vec3 },
+    
+    /// Bounding Sphere
+    BoundingSphere { center: Vec3, radius: f32 },
+    
+    /// Convex Hull (list of vertices + faces)
+    ConvexHull { vertices: Vec<Vec3>, faces: Vec<[usize; 3]> },
+    
+    /// Simplified Mesh (reduced vertex count)
+    SimplifiedMesh { vertices: Vec<Vec3>, indices: Vec<u32> },
+}
+
+impl GeneratedShape {
+    /// Convert to Collider for collision detection
+    pub fn to_collider(&self) -> ColliderShape {
+        match self {
+            GeneratedShape::BoundingBox { min, max } => {
+                let center = (*min + *max) / 2.0;
+                let half_extents = (*max - center).abs();
+                ColliderShape::Box { half_extents }
+            }
+            GeneratedShape::BoundingSphere { center: _, radius } => {
+                ColliderShape::Sphere { radius: *radius }
+            }
+            // TODO: For ConvexHull and SimplifiedMesh, we'll approximate with Box for now
+            GeneratedShape::ConvexHull { vertices, .. } => {
+                let min = vertices.iter().fold(Vec3::splat(f32::MAX), |acc, v| acc.min(*v));
+                let max = vertices.iter().fold(Vec3::splat(f32::MIN), |acc, v| acc.max(*v));
+                let center = (min + max) / 2.0;
+                let half_extents = (max - center).abs();
+                ColliderShape::Box { half_extents }
+            }
+            GeneratedShape::SimplifiedMesh { vertices, .. } => {
+                let min = vertices.iter().fold(Vec3::splat(f32::MAX), |acc, v| acc.min(*v));
+                let max = vertices.iter().fold(Vec3::splat(f32::MIN), |acc, v| acc.max(*v));
+                let center = (min + max) / 2.0;
+                let half_extents = (max - center).abs();
+                ColliderShape::Box { half_extents }
+            }
+        }
+    }
+}
+
+// ==================== PHASE 2: MESH EXTRACTION ====================
+
+/// Extract vertices from a Bevy mesh
+fn extract_vertices(mesh: &Mesh) -> Option<Vec<Vec3>> {
+    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?;
+    
+    match positions {
+        VertexAttributeValues::Float32x3(pos) => {
+            Some(pos.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect())
+        }
+        _ => {
+            warn!("Unsupported vertex format for mesh collision generation");
+            None
+        }
+    }
+}
+
+// ==================== PHASE 3: LOW DETAIL GENERATION ====================
+
+/// Generate low detail collision shape (Bounding Box or Sphere)
+fn generate_low_detail(vertices: &[Vec3], config: &AutoCollider) -> GeneratedShape {
+    if vertices.is_empty() {
+        return GeneratedShape::BoundingBox {
+            min: Vec3::ZERO,
+            max: Vec3::ONE,
+        };
+    }
+    
+    match config.preferred_shape.unwrap_or(PreferredShape::Auto) {
+        PreferredShape::Sphere => {
+            // Calculate Bounding Sphere
+            let center = vertices.iter().copied().sum::<Vec3>() / vertices.len() as f32;
+            let radius = vertices.iter()
+                .map(|v| v.distance(center))
+                .fold(0.0f32, |a, b| a.max(b));
+            
+            GeneratedShape::BoundingSphere { 
+                center, 
+                radius: radius + config.padding 
+            }
+        }
+        _ => {
+            // Calculate Axis-Aligned Bounding Box (AABB)
+            let min = vertices.iter().fold(Vec3::splat(f32::MAX), |acc, v| acc.min(*v));
+            let max = vertices.iter().fold(Vec3::splat(f32::MIN), |acc, v| acc.max(*v));
+            
+            // Apply padding
+            let padding_vec = Vec3::splat(config.padding);
+            
+            GeneratedShape::BoundingBox { 
+                min: min - padding_vec,
+                max: max + padding_vec,
+            }
+        }
+    }
+}
+
+// ==================== PHASE 2.5: MEDIUM DETAIL GENERATION ====================
+
+/// Simplify vertices to a target count using 3D grid clustering
+/// This reduces vertex count while preserving overall shape
+fn simplify_vertices(vertices: &[Vec3], target_count: usize) -> Vec<Vec3> {
+    if vertices.len() <= target_count {
+        return vertices.to_vec();
+    }
+    
+    // Calculate bounding box
+    let min = vertices.iter().fold(Vec3::splat(f32::MAX), |acc, v| acc.min(*v));
+    let max = vertices.iter().fold(Vec3::splat(f32::MIN), |acc, v| acc.max(*v));
+    let size = max - min;
+    
+    // Avoid division by zero
+    if size.x < 0.001 || size.y < 0.001 || size.z < 0.001 {
+        // Degenerate mesh (flat or line), just sample evenly
+        let step = vertices.len() / target_count.max(1);
+        return vertices.iter().step_by(step).copied().collect();
+    }
+    
+    // Determine grid dimensions (aim for roughly cubic cells)
+    // We want roughly target_count cells, distributed as a cube
+    let cells_per_axis = (target_count as f32).powf(1.0 / 3.0).ceil() as usize;
+    let cells_per_axis = cells_per_axis.max(2); // At least 2x2x2 grid
+    
+    // Create 3D grid of cells
+    use std::collections::HashMap;
+    let mut grid: HashMap<(usize, usize, usize), Vec<Vec3>> = HashMap::new();
+    
+    // Assign vertices to cells
+    for vertex in vertices {
+        let normalized = (*vertex - min) / size; // 0..1 range
+        let ix = ((normalized.x * cells_per_axis as f32).floor() as usize).min(cells_per_axis - 1);
+        let iy = ((normalized.y * cells_per_axis as f32).floor() as usize).min(cells_per_axis - 1);
+        let iz = ((normalized.z * cells_per_axis as f32).floor() as usize).min(cells_per_axis - 1);
+        
+        grid.entry((ix, iy, iz)).or_insert_with(Vec::new).push(*vertex);
+    }
+    
+    // Average vertices per cell
+    let mut simplified: Vec<Vec3> = grid.values()
+        .map(|cell_vertices| {
+            let sum: Vec3 = cell_vertices.iter().copied().sum();
+            sum / cell_vertices.len() as f32
+        })
+        .collect();
+    
+    // If we got too few vertices, add extreme points to ensure good coverage
+    if simplified.len() < 6 {
+        simplified.push(min);
+        simplified.push(max);
+        simplified.push(Vec3::new(min.x, min.y, max.z));
+        simplified.push(Vec3::new(min.x, max.y, min.z));
+        simplified.push(Vec3::new(max.x, min.y, min.z));
+        simplified.push(Vec3::new(max.x, max.y, min.z));
+    }
+    
+    simplified
+}
+
+/// Compute a simplified convex hull (Quickhull algorithm - simplified version)
+/// Returns vertices and triangle faces
+fn compute_convex_hull(vertices: &[Vec3]) -> (Vec<Vec3>, Vec<[usize; 3]>) {
+    if vertices.len() < 4 {
+        // Not enough vertices for a hull, return as-is
+        return (vertices.to_vec(), Vec::new());
+    }
+    
+    // Step 1: Find extreme points (6 points: min/max in each axis)
+    let mut min_x = vertices[0];
+    let mut max_x = vertices[0];
+    let mut min_y = vertices[0];
+    let mut max_y = vertices[0];
+    let mut min_z = vertices[0];
+    let mut max_z = vertices[0];
+    
+    for v in vertices {
+        if v.x < min_x.x { min_x = *v; }
+        if v.x > max_x.x { max_x = *v; }
+        if v.y < min_y.y { min_y = *v; }
+        if v.y > max_y.y { max_y = *v; }
+        if v.z < min_z.z { min_z = *v; }
+        if v.z > max_z.z { max_z = *v; }
+    }
+    
+    // Collect unique extreme points
+    let mut hull_vertices = Vec::new();
+    let extreme_points = [min_x, max_x, min_y, max_y, min_z, max_z];
+    
+    for point in extreme_points {
+        if !hull_vertices.iter().any(|v: &Vec3| v.distance(point) < 0.001) {
+            hull_vertices.push(point);
+        }
+    }
+    
+    // Step 2: Add more points from original set to improve hull quality
+    // Select points that are furthest from the center
+    let center: Vec3 = vertices.iter().copied().sum::<Vec3>() / vertices.len() as f32;
+    
+    let mut sorted_vertices: Vec<(f32, Vec3)> = vertices.iter()
+        .map(|v| (v.distance(center), *v))
+        .collect();
+    sorted_vertices.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    
+    // Add up to 10 more vertices (furthest from center)
+    for (_, vertex) in sorted_vertices.iter().take(16) {
+        if !hull_vertices.iter().any(|v: &Vec3| v.distance(*vertex) < 0.001) {
+            hull_vertices.push(*vertex);
+        }
+    }
+    
+    // Step 3: Generate faces (simplified - create triangles to nearest neighbors)
+    // For a proper convex hull, we'd use Quickhull or Gift Wrapping
+    // Here we just create a simple triangulation
+    let mut faces = Vec::new();
+    
+    if hull_vertices.len() >= 3 {
+        // Simple fan triangulation from first vertex
+        for i in 1..hull_vertices.len()-1 {
+            faces.push([0, i, i + 1]);
+        }
+    }
+    
+    (hull_vertices, faces)
+}
+
+/// Generate medium detail collision shape (Simplified Convex Hull)
+fn generate_medium_detail(vertices: &[Vec3], config: &AutoCollider) -> GeneratedShape {
+    if vertices.is_empty() {
+        return GeneratedShape::BoundingBox {
+            min: Vec3::ZERO,
+            max: Vec3::ONE,
+        };
+    }
+    
+    // Step 1: Simplify vertex count to ~16-32 vertices
+    let simplified = simplify_vertices(vertices, 24);
+    
+    // Step 2: Compute convex hull
+    let (hull_vertices, hull_faces) = compute_convex_hull(&simplified);
+    
+    // Apply padding if needed
+    let final_vertices = if config.padding != 0.0 {
+        let center: Vec3 = hull_vertices.iter().copied().sum::<Vec3>() / hull_vertices.len() as f32;
+        hull_vertices.iter()
+            .map(|v| {
+                let dir = (*v - center).normalize_or_zero();
+                *v + dir * config.padding
+            })
+            .collect()
+    } else {
+        hull_vertices
+    };
+    
+    GeneratedShape::ConvexHull {
+        vertices: final_vertices,
+        faces: hull_faces,
+    }
+}
+
+// ==================== PHASE 3: HIGH DETAIL WITH PARRY3D ====================
+
+/// Generate high detail collision shape using parry3d's Quickhull algorithm
+/// This provides professional-grade convex hull computation
+fn generate_high_detail(vertices: &[Vec3], config: &AutoCollider) -> GeneratedShape {
+    if vertices.is_empty() {
+        return GeneratedShape::BoundingBox {
+            min: Vec3::ZERO,
+            max: Vec3::ONE,
+        };
+    }
+    
+    // Optional: Simplify if mesh is extremely dense (>500 vertices)
+    // This keeps performance reasonable while maintaining high quality
+    let working_vertices = if vertices.len() > 500 {
+        simplify_vertices(vertices, 200)
+    } else {
+        vertices.to_vec()
+    };
+    
+    // Convert Bevy Vec3 to parry3d Point3
+    use parry3d::math::Point;
+    let points: Vec<Point<f32>> = working_vertices.iter()
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    
+    // Compute convex hull using parry3d's Quickhull algorithm
+    use parry3d::transformation::convex_hull;
+    
+    // parry3d returns (vertices, indices) directly
+    let (hull_vertices, hull_indices) = convex_hull(&points);
+    
+    // Convert back to Bevy Vec3
+    let mut bevy_vertices: Vec<Vec3> = hull_vertices.iter()
+        .map(|p| Vec3::new(p.x, p.y, p.z))
+        .collect();
+    
+    // Apply padding if needed
+    if config.padding != 0.0 {
+        let center: Vec3 = bevy_vertices.iter().copied().sum::<Vec3>() / bevy_vertices.len() as f32;
+        bevy_vertices = bevy_vertices.iter()
+            .map(|v| {
+                let dir = (*v - center).normalize_or_zero();
+                *v + dir * config.padding
+            })
+            .collect();
+    }
+    
+    // Convert indices (parry3d uses [[u32; 3]] for triangle faces)
+    let faces: Vec<[usize; 3]> = hull_indices.iter()
+        .map(|face| [face[0] as usize, face[1] as usize, face[2] as usize])
+        .collect();
+    
+    GeneratedShape::ConvexHull {
+        vertices: bevy_vertices,
+        faces,
+    }
+}
+
+// ==================== PHASE 5: LOD SYSTEM ====================
+
+/// Update collision detail level based on distance to camera
+/// Only affects entities with CollisionLOD component
+fn update_collision_lod(
+    camera_query: Query<&GlobalTransform, With<crate::camera::OrbitCamera>>,
+    mut commands: Commands,
+    mut lod_query: Query<(
+        Entity,
+        &GlobalTransform,
+        &mut AutoCollider,
+        &mut CollisionLOD,
+        Option<&GeneratedCollider>,
+    )>,
+) {
+    // Get camera position
+    let Ok(camera_transform) = camera_query.get_single() else {
+        return;
+    };
+    let camera_pos = camera_transform.translation();
+    
+    for (entity, transform, mut auto_collider, mut lod, generated) in lod_query.iter_mut() {
+        // Skip if LOD is disabled
+        if !lod.auto_switch {
+            continue;
+        }
+        
+        // Calculate distance to camera
+        let object_pos = transform.translation();
+        let distance = camera_pos.distance(object_pos);
+        
+        // Determine appropriate detail level with hysteresis
+        let new_detail = lod.detail_for_distance(distance);
+        
+        // Check if detail level changed
+        if auto_collider.detail != new_detail {
+            // Update detail level
+            auto_collider.detail = new_detail;
+            
+            // Trigger regeneration by removing GeneratedCollider
+            // This will cause generate_colliders() to run again
+            if generated.is_some() {
+                commands.entity(entity).remove::<GeneratedCollider>();
+                commands.entity(entity).remove::<Collider>();
+                commands.entity(entity).remove::<CollisionCache>();
+                
+                // Log detail switch
+                info!(
+                    "LOD switched to {:?} at distance {:.1}m for entity {:?}",
+                    new_detail, distance, entity
+                );
+            }
+        }
+    }
+}
+
+// ==================== PHASE 4: CACHE SYSTEMS ====================
+
+/// Create CollisionCache for new colliders
+/// Runs for entities with Collider but no CollisionCache
+fn create_collision_caches(
+    mut commands: Commands,
+    query: Query<(Entity, &Collider, &GlobalTransform), Without<CollisionCache>>,
+) {
+    for (entity, collider, transform) in query.iter() {
+        let position = transform.translation();
+        let rotation = transform.to_scale_rotation_translation().1;
+        
+        let cache = CollisionCache::from_shape(&collider.shape, position, rotation);
+        
+        commands.entity(entity).insert(cache);
+    }
+}
+
+/// Update CollisionCache when Transform changes
+/// Only updates caches for entities whose transform has changed
+fn update_collision_caches(
+    mut query: Query<(&Collider, &GlobalTransform, &mut CollisionCache), Changed<GlobalTransform>>,
+) {
+    for (collider, transform, mut cache) in query.iter_mut() {
+        let position = transform.translation();
+        let rotation = transform.to_scale_rotation_translation().1;
+        
+        // Only update if transform actually changed (avoid false positives)
+        if cache.needs_update(position, rotation) {
+            cache.update(&collider.shape, position, rotation);
+        }
+    }
+}
+
+// ==================== PHASE 4: COLLIDER GENERATION SYSTEM ====================
+
+/// System that analyzes meshes and generates colliders
+/// Runs once for each entity with AutoCollider but no GeneratedCollider
+fn generate_colliders(
+    mut commands: Commands,
+    query: Query<(Entity, &AutoCollider, &Handle<Mesh>), Without<GeneratedCollider>>,
+    meshes: Res<Assets<Mesh>>,
+) {
+    for (entity, auto_collider, mesh_handle) in query.iter() {
+        // Get mesh data
+        let Some(mesh) = meshes.get(mesh_handle) else { 
+            continue;
+        };
+        
+        // Extract vertices
+        let Some(vertices) = extract_vertices(mesh) else {
+            warn!("Failed to extract vertices from mesh for entity {:?}", entity);
+            continue;
+        };
+        
+        if vertices.is_empty() {
+            warn!("Mesh has no vertices for entity {:?}", entity);
+            continue;
+        }
+        
+        // Generate shape based on detail level
+        let generated_shape = match auto_collider.detail {
+            CollisionDetail::Low => generate_low_detail(&vertices, auto_collider),
+            CollisionDetail::Medium => generate_medium_detail(&vertices, auto_collider),
+            CollisionDetail::High => generate_high_detail(&vertices, auto_collider),
+        };
+        
+        // Convert to Collider shape
+        let collider_shape = generated_shape.to_collider();
+        
+        // Add both GeneratedCollider (for tracking) and Collider (for collision detection)
+        commands.entity(entity).insert((
+            GeneratedCollider {
+                shape: generated_shape.clone(),
+                source_mesh: mesh_handle.clone(),
+                detail_used: auto_collider.detail,
+            },
+            Collider {
+                shape: collider_shape,
+                collision_type: auto_collider.collision_type,
+                layer: auto_collider.layer,
+            },
+            CollidingWith::default(),
+        ));
+        
+        info!(
+            "Generated {:?} collider for entity {:?} (vertices: {})",
+            auto_collider.detail, entity,
+            match &generated_shape {
+                GeneratedShape::ConvexHull { vertices, .. } => vertices.len(),
+                GeneratedShape::SimplifiedMesh { vertices, .. } => vertices.len(),
+                _ => 0,
+            }
+        );
+    }
 }
 
 // ==================== PHASE 3: SPATIAL PARTITIONING ====================
@@ -284,28 +1068,32 @@ struct CollisionData {
     is_trigger_b: bool,
 }
 
-/// Main collision detection system (Phase 4: Multi-Threaded)
+/// Main collision detection system (Phase 4: Multi-Threaded with Cache)
+/// Uses CollisionCache for fast broad-phase checks
 /// Uses Rayon to parallelize collision checks across CPU cores
 fn detect_collisions(
     grid: Res<SpatialGrid>,
-    collider_query: Query<(Entity, &GlobalTransform, &Collider, &CollidingWith)>,
+    collider_query: Query<(Entity, &GlobalTransform, &Collider, &CollidingWith, Option<&CollisionCache>)>,
     mut collision_started: EventWriter<CollisionStarted>,
     mut trigger_entered: EventWriter<TriggerEntered>,
 ) {
     use std::collections::HashSet;
     use std::sync::Mutex;
     
-    // Collect entity data into a thread-safe structure
+    // Collect entity data into a thread-safe structure (now with cache)
     let entity_data: Vec<_> = collider_query
         .iter()
-        .map(|(entity, transform, collider, colliding_with)| {
+        .map(|(entity, transform, collider, colliding_with, cache)| {
+            let (_, rotation, translation) = transform.to_scale_rotation_translation();
             (
                 entity,
-                transform.translation(),
+                translation,
+                rotation,
                 collider.shape,
                 collider.collision_type,
                 collider.layer,
                 colliding_with.entities.clone(),
+                cache.cloned(),  // Clone cache for thread-safety
             )
         })
         .collect();
@@ -315,7 +1103,7 @@ fn detect_collisions(
     let checked_pairs = Arc::new(Mutex::new(HashSet::new()));
     
     // Process entities in parallel using Rayon
-    entity_data.par_iter().for_each(|(entity_a, pos_a, shape_a, type_a, layer_a, colliding_with_a)| {
+    entity_data.par_iter().for_each(|(entity_a, pos_a, rot_a, shape_a, type_a, layer_a, colliding_with_a, cache_a)| {
         let radius_a = match shape_a {
             ColliderShape::Cylinder { radius, .. } => *radius,
             ColliderShape::Sphere { radius } => *radius,
@@ -350,7 +1138,7 @@ fn detect_collisions(
                 }
                 
                 // Find entity_b's data
-                if let Some((_, pos_b, shape_b, type_b, layer_b, colliding_with_b)) = 
+                if let Some((_, pos_b, rot_b, shape_b, type_b, layer_b, colliding_with_b, cache_b)) = 
                     entity_data.iter().find(|(e, ..)| *e == entity_b) {
                     
                     // Check collision layers
@@ -358,7 +1146,22 @@ fn detect_collisions(
                         continue;
                     }
                     
-                    // Check if collision occurs
+                    // Phase 4: Fast broad-phase check using cache (if available)
+                    if let (Some(cache_a), Some(cache_b)) = (cache_a, cache_b) {
+                        // First: Fast AABB overlap test
+                        if !cache_a.aabb_overlaps(cache_b) {
+                            continue;  // No AABB overlap = no collision
+                        }
+                        
+                        // Second: Fast sphere overlap test
+                        if !cache_a.sphere_overlaps(*pos_a, *rot_a, cache_b, *pos_b, *rot_b) {
+                            continue;  // No sphere overlap = no collision
+                        }
+                        
+                        // Both passed: proceed to detailed collision check
+                    }
+                    
+                    // Narrow-phase: Detailed collision check
                     if let Some(collision_info) = check_collision(
                         *pos_a, shape_a,
                         *pos_b, shape_b,
@@ -787,4 +1590,288 @@ enum ResolutionType {
         pushback_a: f32,
         pushback_b: f32,
     },
+}
+
+// ==================== PHASE 6: VISUAL DEBUGGING ====================
+
+/// Resource to control collision debug visualization
+#[derive(Resource)]
+pub struct CollisionDebugConfig {
+    pub enabled: bool,
+    pub show_aabb: bool,
+    pub show_shapes: bool,
+    pub show_caches: bool,
+}
+
+impl Default for CollisionDebugConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,        // F1 to toggle
+            show_aabb: true,       // Show AABB boxes
+            show_shapes: true,     // Show collision shapes
+            show_caches: true,     // Show cache bounding spheres
+        }
+    }
+}
+
+/// Toggle collision debug visualization with F1 key
+fn toggle_collision_debug(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut config: ResMut<CollisionDebugConfig>,
+) {
+    if keyboard.just_pressed(KeyCode::F1) {
+        config.enabled = !config.enabled;
+        if config.enabled {
+            info!("🔍 Collision Debug: ON (F1 to toggle off)");
+        } else {
+            info!("👁️ Collision Debug: OFF (F1 to toggle on)");
+        }
+    }
+    
+    // Additional toggles when debug is enabled
+    if config.enabled {
+        if keyboard.just_pressed(KeyCode::F2) {
+            config.show_aabb = !config.show_aabb;
+            info!("📦 AABB Display: {}", if config.show_aabb { "ON" } else { "OFF" });
+        }
+        if keyboard.just_pressed(KeyCode::F3) {
+            config.show_shapes = !config.show_shapes;
+            info!("🔷 Shapes Display: {}", if config.show_shapes { "ON" } else { "OFF" });
+        }
+        if keyboard.just_pressed(KeyCode::F4) {
+            config.show_caches = !config.show_caches;
+            info!("⭕ Cache Display: {}", if config.show_caches { "ON" } else { "OFF" });
+        }
+    }
+}
+
+/// Draw collision shapes for debugging
+fn draw_collision_debug(
+    config: Res<CollisionDebugConfig>,
+    query: Query<(
+        &Transform,
+        &Collider,
+        Option<&AutoCollider>,
+        Option<&CollisionCache>,
+        Option<&GeneratedCollider>,
+    )>,
+    mut gizmos: Gizmos,
+) {
+    if !config.enabled {
+        return;
+    }
+    
+    for (transform, collider, auto_collider, cache, generated) in query.iter() {
+        let position = transform.translation;
+        
+        // Get color based on detail level (if AutoCollider)
+        let color = if let Some(auto) = auto_collider {
+            match auto.detail {
+                CollisionDetail::Low => Color::srgb(0.2, 0.8, 0.2),    // Green
+                CollisionDetail::Medium => Color::srgb(0.8, 0.8, 0.2), // Yellow
+                CollisionDetail::High => Color::srgb(0.8, 0.2, 0.2),   // Red
+            }
+        } else {
+            Color::srgb(0.5, 0.5, 0.8) // Blue for manual colliders
+        };
+        
+        // Draw collision shape
+        if config.show_shapes {
+            match &collider.shape {
+                ColliderShape::Cylinder { radius, height } => {
+                    draw_cylinder(&mut gizmos, position, *radius, *height, color);
+                }
+                ColliderShape::Sphere { radius } => {
+                    gizmos.sphere(position, Quat::IDENTITY, *radius, color);
+                }
+                ColliderShape::Box { half_extents } => {
+                    draw_box(&mut gizmos, position, *half_extents, color);
+                }
+            }
+            
+            // Draw generated shape if it exists (convex hulls, etc.)
+            if let Some(gen) = generated {
+                match &gen.shape {
+                    GeneratedShape::ConvexHull { vertices, .. } => {
+                        draw_convex_hull(&mut gizmos, position, transform.rotation, vertices, color);
+                    }
+                    GeneratedShape::BoundingBox { min, max } => {
+                        let center = (*min + *max) / 2.0;
+                        let half_extents = (*max - center).abs();
+                        draw_box(&mut gizmos, position + center, half_extents, color);
+                    }
+                    GeneratedShape::BoundingSphere { center, radius } => {
+                        gizmos.sphere(position + *center, Quat::IDENTITY, *radius, color);
+                    }
+                    GeneratedShape::SimplifiedMesh { vertices, .. } => {
+                        // Draw simplified mesh vertices as points
+                        for vertex in vertices {
+                            let world_pos = position + transform.rotation * *vertex;
+                            gizmos.sphere(world_pos, Quat::IDENTITY, 0.05, color);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Draw cache bounding sphere (slightly transparent)
+        if config.show_caches {
+            if let Some(cache) = cache {
+                let cache_color = Color::srgba(0.3, 0.6, 1.0, 0.3);
+                gizmos.sphere(
+                    cache.bounding_sphere.0,
+                    Quat::IDENTITY,
+                    cache.bounding_sphere.1,
+                    cache_color,
+                );
+                
+                // Draw AABB if enabled
+                if config.show_aabb {
+                    let (min, max) = cache.aabb;
+                    draw_aabb(&mut gizmos, min, max, Color::srgba(1.0, 1.0, 0.0, 0.2));
+                }
+            }
+        }
+    }
+}
+
+/// Draw a cylinder wireframe
+fn draw_cylinder(gizmos: &mut Gizmos, center: Vec3, radius: f32, height: f32, color: Color) {
+    let segments = 16;
+    let half_height = height / 2.0;
+    
+    // Bottom circle
+    let bottom = center + Vec3::new(0.0, -half_height, 0.0);
+    for i in 0..segments {
+        let angle1 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let angle2 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+        
+        let p1 = bottom + Vec3::new(angle1.cos() * radius, 0.0, angle1.sin() * radius);
+        let p2 = bottom + Vec3::new(angle2.cos() * radius, 0.0, angle2.sin() * radius);
+        
+        gizmos.line(p1, p2, color);
+    }
+    
+    // Top circle
+    let top = center + Vec3::new(0.0, half_height, 0.0);
+    for i in 0..segments {
+        let angle1 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let angle2 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+        
+        let p1 = top + Vec3::new(angle1.cos() * radius, 0.0, angle1.sin() * radius);
+        let p2 = top + Vec3::new(angle2.cos() * radius, 0.0, angle2.sin() * radius);
+        
+        gizmos.line(p1, p2, color);
+    }
+    
+    // Vertical lines connecting top and bottom
+    for i in 0..4 {
+        let angle = (i as f32 / 4.0) * std::f32::consts::TAU;
+        let p1 = bottom + Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
+        let p2 = top + Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
+        gizmos.line(p1, p2, color);
+    }
+}
+
+
+
+/// Draw a box wireframe
+fn draw_box(gizmos: &mut Gizmos, center: Vec3, half_extents: Vec3, color: Color) {
+    let corners = [
+        center + Vec3::new(-half_extents.x, -half_extents.y, -half_extents.z),
+        center + Vec3::new(half_extents.x, -half_extents.y, -half_extents.z),
+        center + Vec3::new(half_extents.x, -half_extents.y, half_extents.z),
+        center + Vec3::new(-half_extents.x, -half_extents.y, half_extents.z),
+        center + Vec3::new(-half_extents.x, half_extents.y, -half_extents.z),
+        center + Vec3::new(half_extents.x, half_extents.y, -half_extents.z),
+        center + Vec3::new(half_extents.x, half_extents.y, half_extents.z),
+        center + Vec3::new(-half_extents.x, half_extents.y, half_extents.z),
+    ];
+    
+    // Bottom face
+    gizmos.line(corners[0], corners[1], color);
+    gizmos.line(corners[1], corners[2], color);
+    gizmos.line(corners[2], corners[3], color);
+    gizmos.line(corners[3], corners[0], color);
+    
+    // Top face
+    gizmos.line(corners[4], corners[5], color);
+    gizmos.line(corners[5], corners[6], color);
+    gizmos.line(corners[6], corners[7], color);
+    gizmos.line(corners[7], corners[4], color);
+    
+    // Vertical edges
+    gizmos.line(corners[0], corners[4], color);
+    gizmos.line(corners[1], corners[5], color);
+    gizmos.line(corners[2], corners[6], color);
+    gizmos.line(corners[3], corners[7], color);
+}
+
+/// Draw a convex hull wireframe
+fn draw_convex_hull(
+    gizmos: &mut Gizmos,
+    position: Vec3,
+    rotation: Quat,
+    vertices: &[Vec3],
+    color: Color,
+) {
+    if vertices.len() < 2 {
+        return;
+    }
+    
+    // Transform vertices to world space
+    let world_vertices: Vec<Vec3> = vertices
+        .iter()
+        .map(|v| position + rotation * *v)
+        .collect();
+    
+    // Draw edges between all nearby vertices (simple wireframe)
+    // For proper hull edges, we'd need the face data
+    for i in 0..world_vertices.len() {
+        for j in (i + 1)..world_vertices.len() {
+            let distance = world_vertices[i].distance(world_vertices[j]);
+            
+            // Only draw edges between close vertices (heuristic for hull edges)
+            if distance < 3.0 {
+                gizmos.line(world_vertices[i], world_vertices[j], color);
+            }
+        }
+    }
+    
+    // Also draw a point at each vertex for clarity
+    for vertex in world_vertices {
+        gizmos.sphere(vertex, Quat::IDENTITY, 0.05, color);
+    }
+}
+
+/// Draw an AABB wireframe
+fn draw_aabb(gizmos: &mut Gizmos, min: Vec3, max: Vec3, color: Color) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+    
+    // Bottom face
+    gizmos.line(corners[0], corners[1], color);
+    gizmos.line(corners[1], corners[2], color);
+    gizmos.line(corners[2], corners[3], color);
+    gizmos.line(corners[3], corners[0], color);
+    
+    // Top face
+    gizmos.line(corners[4], corners[5], color);
+    gizmos.line(corners[5], corners[6], color);
+    gizmos.line(corners[6], corners[7], color);
+    gizmos.line(corners[7], corners[4], color);
+    
+    // Vertical edges
+    gizmos.line(corners[0], corners[4], color);
+    gizmos.line(corners[1], corners[5], color);
+    gizmos.line(corners[2], corners[6], color);
+    gizmos.line(corners[3], corners[7], color);
 }
