@@ -3,7 +3,7 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use crate::GameState;
 use crate::GameFont;
-use crate::networking::{NetworkClient, send_auth_request, AuthResponseEvent, ServerConnectionState};
+use crate::networking::{NetworkClient, send_auth_request, AuthResponseEvent};
 use shared::{AuthMessage, AuthResponse};
 use super::{button_system, NORMAL_BUTTON};
 
@@ -21,7 +21,6 @@ impl Plugin for LoginPlugin {
                 update_input_display,
                 update_submit_button_text,
                 update_status_display,
-                update_server_status_display,
                 handle_auth_response_ui,
             ).run_if(in_state(GameState::Login)));
     }
@@ -73,9 +72,6 @@ struct EmailDisplay;
 struct StatusDisplay;
 
 #[derive(Component)]
-struct ServerStatusDisplay;
-
-#[derive(Component)]
 struct RegisterFields;
 
 fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font: Res<GameFont>) {
@@ -104,37 +100,6 @@ fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font
         LoginUI,
     ))
     .with_children(|parent| {
-        // Server Status Banner (at top)
-        parent.spawn((
-            NodeBundle {
-                style: Style {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(40.0),
-                    position_type: PositionType::Absolute,
-                    top: Val::Px(0.0),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    ..default()
-                },
-                background_color: Color::srgba(0.8, 0.2, 0.2, 0.9).into(), // Red by default
-                ..default()
-            },
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                TextBundle::from_section(
-                    "⚠ Server nicht erreichbar",
-                    TextStyle {
-                        font: font_handle.clone(),
-                        font_size: 22.0,
-                        color: Color::WHITE,
-                        ..default()
-                    },
-                ),
-                ServerStatusDisplay,
-            ));
-        });
-        
         // Title
         parent.spawn(TextBundle::from_section(
             "Willkommen",
@@ -635,32 +600,6 @@ fn update_status_display(
                 text.sections[0].style.color = Color::srgb(1.0, 0.3, 0.3);
             } else {
                 text.sections[0].style.color = Color::srgb(0.7, 0.7, 0.7);
-            }
-        }
-    }
-}
-
-fn update_server_status_display(
-    connection_state: Res<ServerConnectionState>,
-    mut text_query: Query<(&mut Text, &Parent), With<ServerStatusDisplay>>,
-    mut banner_query: Query<&mut BackgroundColor>,
-) {
-    if connection_state.is_changed() {
-        for (mut text, parent) in text_query.iter_mut() {
-            // Update text based on connection status
-            if connection_state.is_connected {
-                text.sections[0].value = "✓ Server verbunden".to_string();
-            } else {
-                text.sections[0].value = "⚠ Server nicht erreichbar".to_string();
-            }
-            
-            // Update banner color
-            if let Ok(mut bg_color) = banner_query.get_mut(parent.get()) {
-                *bg_color = if connection_state.is_connected {
-                    Color::srgba(0.2, 0.7, 0.2, 0.9).into() // Green
-                } else {
-                    Color::srgba(0.8, 0.2, 0.2, 0.9).into() // Red
-                };
             }
         }
     }

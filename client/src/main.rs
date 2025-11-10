@@ -1,4 +1,5 @@
 mod auth_state;
+mod building;
 mod camera;
 mod collision;
 mod interaction;
@@ -17,6 +18,7 @@ use camera::CameraPlugin;
 use npc::NpcPlugin;
 use interaction::InteractionPlugin;
 use collision::CollisionPlugin;
+use building::BuildingPlugin;
 
 /// Global font resource for UI
 #[derive(Resource)]
@@ -57,6 +59,7 @@ fn main() {
         .add_event::<networking::CharacterResponseEvent>()
         .add_plugins((
             NetworkingPlugin,
+            BuildingPlugin,
             CollisionPlugin,
             PlayerPlugin,
             CameraPlugin,

@@ -899,7 +899,8 @@ fn generate_colliders(
 ) {
     for (entity, auto_collider, mesh_handle) in query.iter() {
         // Get mesh data
-        let Some(mesh) = meshes.get(mesh_handle) else { 
+        let Some(mesh) = meshes.get(mesh_handle) else {
+            warn!("⚠️  Mesh not loaded yet for entity {:?} - will retry next frame", entity);
             continue;
         };
         
@@ -940,12 +941,26 @@ fn generate_colliders(
         ));
         
         info!(
-            "Generated {:?} collider for entity {:?} (vertices: {})",
+            "✅ Generated {:?} collider for entity {:?} | Shape: {:?} | Layer: {:?} | Type: {:?} | Vertices: {}",
             auto_collider.detail, entity,
+            match &collider_shape {
+                ColliderShape::Box { .. } => "Box",
+                ColliderShape::Cylinder { .. } => "Cylinder",
+                ColliderShape::Sphere { .. } => "Sphere",
+            },
+            auto_collider.layer,
+            auto_collider.collision_type,
             match &generated_shape {
                 GeneratedShape::ConvexHull { vertices, .. } => vertices.len(),
                 GeneratedShape::SimplifiedMesh { vertices, .. } => vertices.len(),
-                _ => 0,
+                GeneratedShape::BoundingBox { min, max } => {
+                    info!("   📦 BoundingBox: min={:?}, max={:?}", min, max);
+                    0
+                },
+                GeneratedShape::BoundingSphere { center, radius } => {
+                    info!("   ⚪ BoundingSphere: center={:?}, radius={}", center, radius);
+                    0
+                },
             }
         );
     }
@@ -1163,9 +1178,16 @@ fn detect_collisions(
                     
                     // Narrow-phase: Detailed collision check
                     if let Some(collision_info) = check_collision(
-                        *pos_a, shape_a,
-                        *pos_b, shape_b,
+                        *pos_a, *rot_a, shape_a,
+                        *pos_b, *rot_b, shape_b,
                     ) {
+                        // Debug: Log first few collisions
+                        static COLLISION_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                        let count = COLLISION_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if count < 5 {
+                            info!("🔴 COLLISION DETECTED #{}: {:?} <-> {:?} | Penetration: {:.3} | Normal: {:?}", 
+                                count + 1, entity_a, entity_b, collision_info.penetration_depth, collision_info.normal);
+                        }
                         // Check if this is a new collision
                         let was_colliding_a = colliding_with_a.contains(&entity_b);
                         let was_colliding_b = colliding_with_b.contains(entity_a);
@@ -1238,7 +1260,7 @@ fn update_colliding_with(
     
     // Use spatial grid to find collisions efficiently
     for (entity_a, transform_a, collider_a, _) in collider_query.iter() {
-        let pos_a = transform_a.translation();
+        let (_, rot_a, pos_a) = transform_a.to_scale_rotation_translation();
         
         let radius_a = match collider_a.shape {
             ColliderShape::Cylinder { radius, .. } => radius,
@@ -1274,9 +1296,9 @@ fn update_colliding_with(
                     continue;
                 }
                 
-                let pos_b = transform_b.translation();
+                let (_, rot_b, pos_b) = transform_b.to_scale_rotation_translation();
                 
-                if check_collision(pos_a, &collider_a.shape, pos_b, &collider_b.shape).is_some() {
+                if check_collision(pos_a, rot_a, &collider_a.shape, pos_b, rot_b, &collider_b.shape).is_some() {
                     current_collisions.push((entity_a, entity_b));
                 }
             }
@@ -1313,10 +1335,13 @@ fn update_colliding_with(
 }
 
 /// Check collision between two shapes
+/// Now supports rotation for accurate Oriented Bounding Box (OBB) collision
 fn check_collision(
     pos_a: Vec3,
+    rot_a: Quat,
     shape_a: &ColliderShape,
     pos_b: Vec3,
+    rot_b: Quat,
     shape_b: &ColliderShape,
 ) -> Option<CollisionInfo> {
     match (shape_a, shape_b) {
@@ -1334,19 +1359,292 @@ fn check_collision(
             check_cylinder_sphere(pos_a, *r, *h, pos_b, *r_s)
         }
         
-        // Box collisions - simplified for now (treat as sphere)
-        (ColliderShape::Box { half_extents: he }, _) => {
-            let radius = he.max_element();
-            check_sphere_sphere(pos_a, radius, pos_b, 0.5)
+        // Box vs Box - OBB collision with rotation support
+        (ColliderShape::Box { half_extents: he_a }, ColliderShape::Box { half_extents: he_b }) => {
+            check_box_box(pos_a, rot_a, *he_a, pos_b, rot_b, *he_b)
         }
-        (_, ColliderShape::Box { half_extents: he }) => {
-            let radius = he.max_element();
-            check_sphere_sphere(pos_a, 0.5, pos_b, radius)
+        
+        // Box vs Cylinder
+        (ColliderShape::Box { half_extents: he }, ColliderShape::Cylinder { radius, height }) => {
+            check_box_cylinder(pos_a, rot_a, *he, pos_b, *radius, *height)
+        }
+        (ColliderShape::Cylinder { radius, height }, ColliderShape::Box { half_extents: he }) => {
+            check_box_cylinder(pos_b, rot_b, *he, pos_a, *radius, *height).map(|info| {
+                // Reverse normal for swapped order
+                CollisionInfo {
+                    normal: -info.normal,
+                    ..info
+                }
+            })
+        }
+        
+        // Box vs Sphere
+        (ColliderShape::Box { half_extents: he }, ColliderShape::Sphere { radius }) => {
+            check_box_sphere(pos_a, rot_a, *he, pos_b, *radius)
+        }
+        (ColliderShape::Sphere { radius }, ColliderShape::Box { half_extents: he }) => {
+            check_box_sphere(pos_b, rot_b, *he, pos_a, *radius).map(|info| {
+                // Reverse normal for swapped order
+                CollisionInfo {
+                    normal: -info.normal,
+                    ..info
+                }
+            })
         }
     }
 }
 
+// ==================== ORIENTED BOUNDING BOX (OBB) COLLISION ====================
+
+/// Box-Box collision detection using Separating Axis Theorem (SAT)
+/// Supports full rotation via Oriented Bounding Boxes (OBB)
+fn check_box_box(
+    pos_a: Vec3,
+    rot_a: Quat,
+    half_extents_a: Vec3,
+    pos_b: Vec3,
+    rot_b: Quat,
+    half_extents_b: Vec3,
+) -> Option<CollisionInfo> {
+    // Get OBB axes (local X, Y, Z rotated to world space)
+    let axes_a = [
+        rot_a * Vec3::X,
+        rot_a * Vec3::Y,
+        rot_a * Vec3::Z,
+    ];
+    let axes_b = [
+        rot_b * Vec3::X,
+        rot_b * Vec3::Y,
+        rot_b * Vec3::Z,
+    ];
+    
+    // Vector from A to B
+    let t = pos_b - pos_a;
+    
+    let mut min_overlap = f32::MAX;
+    let mut min_axis = Vec3::ZERO;
+    
+    // Test axes from box A (3 axes)
+    for (i, axis) in axes_a.iter().enumerate() {
+        let overlap = test_axis_obb(
+            *axis, t,
+            &axes_a, half_extents_a,
+            &axes_b, half_extents_b,
+        );
+        
+        if overlap <= 0.0 {
+            return None; // Separating axis found - no collision
+        }
+        
+        if overlap < min_overlap {
+            min_overlap = overlap;
+            min_axis = *axis;
+        }
+    }
+    
+    // Test axes from box B (3 axes)
+    for (i, axis) in axes_b.iter().enumerate() {
+        let overlap = test_axis_obb(
+            *axis, t,
+            &axes_a, half_extents_a,
+            &axes_b, half_extents_b,
+        );
+        
+        if overlap <= 0.0 {
+            return None;
+        }
+        
+        if overlap < min_overlap {
+            min_overlap = overlap;
+            min_axis = *axis;
+        }
+    }
+    
+    // Test cross product axes (9 axes: 3x3 combinations)
+    for axis_a in &axes_a {
+        for axis_b in &axes_b {
+            let axis = axis_a.cross(*axis_b);
+            let axis_len = axis.length();
+            
+            // Skip near-parallel axes
+            if axis_len < 0.001 {
+                continue;
+            }
+            
+            let axis_normalized = axis / axis_len;
+            let overlap = test_axis_obb(
+                axis_normalized, t,
+                &axes_a, half_extents_a,
+                &axes_b, half_extents_b,
+            );
+            
+            if overlap <= 0.0 {
+                return None;
+            }
+            
+            if overlap < min_overlap {
+                min_overlap = overlap;
+                min_axis = axis_normalized;
+            }
+        }
+    }
+    
+    // Ensure normal points from A to B
+    if min_axis.dot(t) < 0.0 {
+        min_axis = -min_axis;
+    }
+    
+    Some(CollisionInfo {
+        penetration_depth: min_overlap,
+        normal: min_axis,
+        contact_point: pos_a + min_axis * (min_overlap * 0.5),
+    })
+}
+
+/// Helper function to test a single axis for OBB separation
+fn test_axis_obb(
+    axis: Vec3,
+    t: Vec3,
+    axes_a: &[Vec3; 3],
+    half_extents_a: Vec3,
+    axes_b: &[Vec3; 3],
+    half_extents_b: Vec3,
+) -> f32 {
+    // Project box A onto axis
+    let r_a = half_extents_a.x * axes_a[0].dot(axis).abs()
+        + half_extents_a.y * axes_a[1].dot(axis).abs()
+        + half_extents_a.z * axes_a[2].dot(axis).abs();
+    
+    // Project box B onto axis
+    let r_b = half_extents_b.x * axes_b[0].dot(axis).abs()
+        + half_extents_b.y * axes_b[1].dot(axis).abs()
+        + half_extents_b.z * axes_b[2].dot(axis).abs();
+    
+    // Project separation vector onto axis
+    let distance = t.dot(axis).abs();
+    
+    // Overlap = sum of projections - distance
+    r_a + r_b - distance
+}
+
+/// Box-Cylinder collision detection
+/// Box is oriented, cylinder is always axis-aligned (Y-up)
+fn check_box_cylinder(
+    box_pos: Vec3,
+    box_rot: Quat,
+    box_half_extents: Vec3,
+    cyl_pos: Vec3,
+    cyl_radius: f32,
+    cyl_height: f32,
+) -> Option<CollisionInfo> {
+    // Transform cylinder center to box's local space
+    let local_cyl_pos = box_rot.inverse() * (cyl_pos - box_pos);
+    
+    // Find closest point on box (in local space) to cylinder center
+    let clamped_x = local_cyl_pos.x.clamp(-box_half_extents.x, box_half_extents.x);
+    let clamped_y = local_cyl_pos.y.clamp(-box_half_extents.y, box_half_extents.y);
+    let clamped_z = local_cyl_pos.z.clamp(-box_half_extents.z, box_half_extents.z);
+    let closest_point_local = Vec3::new(clamped_x, clamped_y, clamped_z);
+    
+    // Transform back to world space
+    let closest_point_world = box_pos + box_rot * closest_point_local;
+    
+    // Check if closest point is inside cylinder
+    let diff = closest_point_world - cyl_pos;
+    let horizontal_dist = (diff.x * diff.x + diff.z * diff.z).sqrt();
+    
+    // Cylinder is centered at cyl_pos, so min/max are offset by half height
+    let half_height = cyl_height / 2.0;
+    let cyl_min_y = cyl_pos.y - half_height;
+    let cyl_max_y = cyl_pos.y + half_height;
+    
+    // Check if inside cylinder's vertical range and horizontal radius
+    if closest_point_world.y >= cyl_min_y && 
+       closest_point_world.y <= cyl_max_y && 
+       horizontal_dist <= cyl_radius {
+        
+        // Calculate penetration
+        let radial_penetration = cyl_radius - horizontal_dist;
+        let top_penetration = cyl_max_y - closest_point_world.y;
+        let bottom_penetration = closest_point_world.y - cyl_min_y;
+        
+        // Use minimum penetration
+        let (penetration, normal) = if radial_penetration < top_penetration && radial_penetration < bottom_penetration {
+            // Horizontal collision
+            let dir = if horizontal_dist > 0.001 {
+                Vec3::new(diff.x, 0.0, diff.z).normalize()
+            } else {
+                Vec3::X
+            };
+            (radial_penetration, dir)
+        } else if top_penetration < bottom_penetration {
+            // Top collision
+            (top_penetration, Vec3::Y)
+        } else {
+            // Bottom collision
+            (bottom_penetration, Vec3::NEG_Y)
+        };
+        
+        Some(CollisionInfo {
+            penetration_depth: penetration,
+            normal,
+            contact_point: closest_point_world,
+        })
+    } else {
+        None
+    }
+}
+
+/// Box-Sphere collision detection
+/// Box is oriented, sphere is simple
+fn check_box_sphere(
+    box_pos: Vec3,
+    box_rot: Quat,
+    box_half_extents: Vec3,
+    sphere_pos: Vec3,
+    sphere_radius: f32,
+) -> Option<CollisionInfo> {
+    // Transform sphere center to box's local space
+    let local_sphere_pos = box_rot.inverse() * (sphere_pos - box_pos);
+    
+    // Find closest point on box (in local space) to sphere center
+    let clamped_x = local_sphere_pos.x.clamp(-box_half_extents.x, box_half_extents.x);
+    let clamped_y = local_sphere_pos.y.clamp(-box_half_extents.y, box_half_extents.y);
+    let clamped_z = local_sphere_pos.z.clamp(-box_half_extents.z, box_half_extents.z);
+    let closest_point_local = Vec3::new(clamped_x, clamped_y, clamped_z);
+    
+    // Distance from sphere center to closest point
+    let diff_local = local_sphere_pos - closest_point_local;
+    let distance_sq = diff_local.length_squared();
+    
+    if distance_sq <= sphere_radius * sphere_radius {
+        // Collision detected
+        let distance = distance_sq.sqrt();
+        let penetration = sphere_radius - distance;
+        
+        // Normal in world space
+        let normal = if distance > 0.001 {
+            (box_rot * diff_local).normalize()
+        } else {
+            // Sphere center is inside box - use direction from box center
+            (sphere_pos - box_pos).normalize()
+        };
+        
+        // Contact point in world space
+        let closest_point_world = box_pos + box_rot * closest_point_local;
+        
+        Some(CollisionInfo {
+            penetration_depth: penetration,
+            normal,
+            contact_point: closest_point_world,
+        })
+    } else {
+        None
+    }
+}
+
 /// Cylinder-Cylinder collision detection
+/// NOTE: Cylinders are centered at pos, not bottom-based
 fn check_cylinder_cylinder(
     pos_a: Vec3,
     radius_a: f32,
@@ -1356,10 +1654,13 @@ fn check_cylinder_cylinder(
     height_b: f32,
 ) -> Option<CollisionInfo> {
     // 1. Check Y-axis overlap (height)
-    let y_min_a = pos_a.y;
-    let y_max_a = pos_a.y + height_a;
-    let y_min_b = pos_b.y;
-    let y_max_b = pos_b.y + height_b;
+    // Cylinders are centered, so offset by half height
+    let half_height_a = height_a / 2.0;
+    let half_height_b = height_b / 2.0;
+    let y_min_a = pos_a.y - half_height_a;
+    let y_max_a = pos_a.y + half_height_a;
+    let y_min_b = pos_b.y - half_height_b;
+    let y_max_b = pos_b.y + half_height_b;
     
     if y_max_a < y_min_b || y_max_b < y_min_a {
         return None; // No vertical overlap
@@ -1423,6 +1724,7 @@ fn check_sphere_sphere(
 }
 
 /// Cylinder-Sphere collision detection (simplified)
+/// NOTE: Cylinder is centered at pos_cyl, not bottom-based
 fn check_cylinder_sphere(
     pos_cyl: Vec3,
     radius_cyl: f32,
@@ -1430,9 +1732,10 @@ fn check_cylinder_sphere(
     pos_sphere: Vec3,
     radius_sphere: f32,
 ) -> Option<CollisionInfo> {
-    // Simplified: Check if sphere center is within cylinder's height
-    let y_min = pos_cyl.y;
-    let y_max = pos_cyl.y + height_cyl;
+    // Cylinder is centered, so offset by half height
+    let half_height = height_cyl / 2.0;
+    let y_min = pos_cyl.y - half_height;
+    let y_max = pos_cyl.y + half_height;
     
     // Clamp sphere Y to cylinder height
     let clamped_y = pos_sphere.y.clamp(y_min, y_max);
@@ -1486,6 +1789,7 @@ fn resolve_collisions(
     for i in 0..entities.len() {
         let (entity_a, transform_a, collider_a, colliding_with_a, pushback_a) = entities[i];
         let pos_a = transform_a.translation;
+        let rot_a = transform_a.rotation;
         
         // Only process dynamic entities
         if collider_a.collision_type != CollisionType::Dynamic {
@@ -1499,6 +1803,7 @@ fn resolve_collisions(
                 entities.iter().find(|(e, ..)| *e == entity_b) {
                 
                 let pos_b = transform_b.translation;
+                let rot_b = transform_b.rotation;
                 
                 // Skip triggers - they don't block movement
                 if collider_b.collision_type == CollisionType::Trigger {
@@ -1507,8 +1812,8 @@ fn resolve_collisions(
                 
                 // Calculate collision info
                 if let Some(collision_info) = check_collision(
-                    pos_a, &collider_a.shape,
-                    pos_b, &collider_b.shape,
+                    pos_a, rot_a, &collider_a.shape,
+                    pos_b, rot_b, &collider_b.shape,
                 ) {
                     // Determine resolution based on collision types
                     let resolution_type = match (collider_a.collision_type, collider_b.collision_type) {
@@ -1546,9 +1851,14 @@ fn resolve_collisions(
         match resolution.resolution_type {
             ResolutionType::DynamicVsStatic { dynamic_entity, pushback_strength } => {
                 // Push dynamic entity out of static object
+                // Use minimal pushback to avoid bouncing - just enough to separate
                 if let Ok((_, mut transform, _, _, _)) = query.get_mut(dynamic_entity) {
-                    let separation = resolution.normal * resolution.penetration * pushback_strength;
-                    transform.translation -= separation;
+                    // Only push if actually penetrating (> 0.01 to avoid micro-jitter)
+                    if resolution.penetration > 0.01 {
+                        // Minimal separation - just get out of collision
+                        let separation = resolution.normal * resolution.penetration;
+                        transform.translation -= separation;
+                    }
                 }
             }
             ResolutionType::DynamicVsDynamic { entity_a, entity_b, pushback_a, pushback_b } => {
@@ -1607,9 +1917,9 @@ impl Default for CollisionDebugConfig {
     fn default() -> Self {
         Self {
             enabled: false,        // F1 to toggle
-            show_aabb: true,       // Show AABB boxes
-            show_shapes: true,     // Show collision shapes
-            show_caches: true,     // Show cache bounding spheres
+            show_aabb: false,      // Show AABB boxes (F2 to toggle when debug is on)
+            show_shapes: true,     // Show collision shapes (F3 to toggle when debug is on)
+            show_caches: false,    // Show cache bounding spheres (F4 to toggle when debug is on)
         }
     }
 }
@@ -1685,23 +1995,20 @@ fn draw_collision_debug(
                     gizmos.sphere(position, Quat::IDENTITY, *radius, color);
                 }
                 ColliderShape::Box { half_extents } => {
-                    draw_box(&mut gizmos, position, *half_extents, color);
+                    draw_box(&mut gizmos, position, transform.rotation, *half_extents, color);
                 }
             }
             
             // Draw generated shape if it exists (convex hulls, etc.)
+            // NOTE: We only draw GeneratedShape for complex shapes (ConvexHull, SimplifiedMesh)
+            // For simple shapes (Box, Sphere), we already drew the Collider above
             if let Some(gen) = generated {
                 match &gen.shape {
                     GeneratedShape::ConvexHull { vertices, .. } => {
                         draw_convex_hull(&mut gizmos, position, transform.rotation, vertices, color);
                     }
-                    GeneratedShape::BoundingBox { min, max } => {
-                        let center = (*min + *max) / 2.0;
-                        let half_extents = (*max - center).abs();
-                        draw_box(&mut gizmos, position + center, half_extents, color);
-                    }
-                    GeneratedShape::BoundingSphere { center, radius } => {
-                        gizmos.sphere(position + *center, Quat::IDENTITY, *radius, color);
+                    GeneratedShape::BoundingBox { .. } | GeneratedShape::BoundingSphere { .. } => {
+                        // Skip - already drawn as Collider shape above
                     }
                     GeneratedShape::SimplifiedMesh { vertices, .. } => {
                         // Draw simplified mesh vertices as points
@@ -1776,17 +2083,24 @@ fn draw_cylinder(gizmos: &mut Gizmos, center: Vec3, radius: f32, height: f32, co
 
 
 /// Draw a box wireframe
-fn draw_box(gizmos: &mut Gizmos, center: Vec3, half_extents: Vec3, color: Color) {
-    let corners = [
-        center + Vec3::new(-half_extents.x, -half_extents.y, -half_extents.z),
-        center + Vec3::new(half_extents.x, -half_extents.y, -half_extents.z),
-        center + Vec3::new(half_extents.x, -half_extents.y, half_extents.z),
-        center + Vec3::new(-half_extents.x, -half_extents.y, half_extents.z),
-        center + Vec3::new(-half_extents.x, half_extents.y, -half_extents.z),
-        center + Vec3::new(half_extents.x, half_extents.y, -half_extents.z),
-        center + Vec3::new(half_extents.x, half_extents.y, half_extents.z),
-        center + Vec3::new(-half_extents.x, half_extents.y, half_extents.z),
+fn draw_box(gizmos: &mut Gizmos, center: Vec3, rotation: Quat, half_extents: Vec3, color: Color) {
+    // Define corners in local space
+    let local_corners = [
+        Vec3::new(-half_extents.x, -half_extents.y, -half_extents.z),
+        Vec3::new(half_extents.x, -half_extents.y, -half_extents.z),
+        Vec3::new(half_extents.x, -half_extents.y, half_extents.z),
+        Vec3::new(-half_extents.x, -half_extents.y, half_extents.z),
+        Vec3::new(-half_extents.x, half_extents.y, -half_extents.z),
+        Vec3::new(half_extents.x, half_extents.y, -half_extents.z),
+        Vec3::new(half_extents.x, half_extents.y, half_extents.z),
+        Vec3::new(-half_extents.x, half_extents.y, half_extents.z),
     ];
+    
+    // Transform to world space with rotation
+    let corners: Vec<Vec3> = local_corners
+        .iter()
+        .map(|&local| center + rotation * local)
+        .collect();
     
     // Bottom face
     gizmos.line(corners[0], corners[1], color);

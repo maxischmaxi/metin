@@ -4,6 +4,7 @@ use crate::camera::OrbitCamera;
 use crate::auth_state::SpawnPosition;
 use crate::networking::NetworkClient;
 use crate::collision::{Collider, ColliderShape, CollisionType, CollisionLayer, CollidingWith, CollisionPushback, AutoCollider, CollisionDetail, PreferredShape, CollisionLOD};
+use crate::building::{Building, BuildingType, RoofType, materials, spawn_building_with_roof};
 use crate::GameFont;
 use shared::ClientMessage;
 use std::time::Duration;
@@ -20,6 +21,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnExit(GameState::InGame), (send_disconnect, cleanup_nameplate_ui))
             .add_systems(Update, (
                 player_movement,
+                enforce_ground_collision, // WICHTIG: Verhindert unter-Boden fallen
                 send_position_updates,
                 update_nameplate_marker_position,
                 update_nameplate_ui_position,
@@ -107,184 +109,30 @@ fn setup_player(
             GameWorld,
         ));
 
-        // Spawn ground plane
+        // Spawn ground plane (large medieval city area)
         commands.spawn((
             PbrBundle {
-                mesh: meshes.add(Plane3d::default().mesh().size(50.0, 50.0)),
+                mesh: meshes.add(Plane3d::default().mesh().size(150.0, 150.0)),
                 material: materials.add(Color::srgb(0.3, 0.7, 0.3)),
                 ..default()
             },
             GameWorld,
         ));
 
-        // Spawn some static obstacles for collision testing
-        // Tree at (-3, 0, 3)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Cylinder::new(0.3, 2.0)),
-                material: materials.add(Color::srgb(0.4, 0.25, 0.1)),
-                transform: Transform::from_xyz(-3.0, 1.0, 3.0),
-                ..default()
-            },
-            Collider {
-                shape: ColliderShape::Cylinder {
-                    radius: 0.3,
-                    height: 2.0,
-                },
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,  // Phase 3
-            },
-            CollidingWith::default(),
-            GameWorld,
-        ));
+        // ==================== CITY BUILDINGS ====================
+        // Medieval city with buildings around a central market square
+        // Plaza area: -20 to +20 in X and Z (40x40m open space) - LARGE MARKET SQUARE
+        // Player spawns at (0, 1, 0) on the plaza
+        // NPC "Meister der Künste" is at (5, 1, 5) at plaza edge
+        // Buildings scaled to realistic medieval proportions (player is ~1.8m tall)
+        // Buildings have varied sizes, rotations, and positions for organic feel
         
-        // Rock at (3, 0, -3)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(0.5)),
-                material: materials.add(Color::srgb(0.5, 0.5, 0.5)),
-                transform: Transform::from_xyz(3.0, 0.5, -3.0),
-                ..default()
-            },
-            Collider {
-                shape: ColliderShape::Sphere { radius: 0.5 },
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,  // Phase 3
-            },
-            CollidingWith::default(),
-            GameWorld,
-        ));
+        // NORTH SIDE (behind the plaza)
         
-        // Wall at (0, 0, -8) - Using AutoCollider (Low Detail)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Cuboid::new(6.0, 2.0, 0.5)),
-                material: materials.add(Color::srgb(0.6, 0.5, 0.4)),
-                transform: Transform::from_xyz(0.0, 1.0, -8.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::Low,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::Box),
-            },
-            GameWorld,
-        ));
         
-        // Test Obstacle with Medium Detail (Octahedron shape)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap()), // More complex mesh
-                material: materials.add(Color::srgb(0.8, 0.3, 0.3)),
-                transform: Transform::from_xyz(5.0, 1.0, 0.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::Medium,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::ConvexHull),
-            },
-            GameWorld,
-        ));
-        
-        // Test Obstacle with High Detail (parry3d Quickhull)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()), // Even more complex (162 vertices)
-                material: materials.add(Color::srgb(0.3, 0.8, 0.3)),
-                transform: Transform::from_xyz(-5.0, 1.0, 0.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::High,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::ConvexHull),
-            },
-            GameWorld,
-        ));
-        
-        // Test Obstacle with Very High Detail (ico sphere level 4 - very dense mesh)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(0.8).mesh().ico(4).unwrap()), // 642 vertices!
-                material: materials.add(Color::srgb(0.8, 0.8, 0.3)),
-                transform: Transform::from_xyz(0.0, 1.0, 5.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::High,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::ConvexHull),
-            },
-            GameWorld,
-        ));
-        
-        // ==================== PHASE 5: LOD TEST OBJECTS ====================
-        
-        // LOD Object 1: Near spawn (starts High, switches to Medium/Low when walking away)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()),
-                material: materials.add(Color::srgb(1.0, 0.5, 0.0)), // Orange
-                transform: Transform::from_xyz(8.0, 1.0, 0.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::Medium, // Will switch based on distance
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::ConvexHull),
-            },
-            CollisionLOD::new(), // Use default thresholds (High < 10m, Medium < 30m)
-            GameWorld,
-        ));
-        
-        // LOD Object 2: Medium distance (starts Medium)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()),
-                material: materials.add(Color::srgb(0.5, 0.0, 1.0)), // Purple
-                transform: Transform::from_xyz(15.0, 1.0, 0.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::Medium,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::ConvexHull),
-            },
-            CollisionLOD::with_distances(10.0, 30.0), // Custom thresholds
-            GameWorld,
-        ));
-        
-        // LOD Object 3: Far distance (starts Low, switches to Medium/High when approaching)
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap()),
-                material: materials.add(Color::srgb(0.0, 1.0, 1.0)), // Cyan
-                transform: Transform::from_xyz(35.0, 1.0, 0.0),
-                ..default()
-            },
-            AutoCollider {
-                detail: CollisionDetail::Low,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::ConvexHull),
-            },
-            CollisionLOD::new(),
-            GameWorld,
-        ));
+        // ==================== CITY BUILDINGS WITH ROOFS ====================
+        // All buildings now have roofs and PBR materials (Step 1 complete!)
+        crate::building::spawn_city_buildings(&mut commands, &mut meshes, &mut materials);
 
         // Spawn light
         commands.spawn((
@@ -320,7 +168,7 @@ fn cleanup_player(
 fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut player_query: Query<(&mut Transform, &Player)>,
+    mut player_query: Query<(&mut Transform, &Player, &crate::collision::CollidingWith)>,
     camera_query: Query<&OrbitCamera>,
     free_cam_state: Res<crate::camera::FreeCamState>,
 ) {
@@ -335,7 +183,7 @@ fn player_movement(
         .map(|cam| cam.yaw)
         .unwrap_or(0.0);
 
-    for (mut transform, player) in player_query.iter_mut() {
+    for (mut transform, player, colliding_with) in player_query.iter_mut() {
         let mut input_direction = Vec3::ZERO;
 
         // Get input in local camera space
@@ -359,9 +207,19 @@ fn player_movement(
             let rotation = Quat::from_rotation_y(camera_yaw);
             let world_direction = rotation * input_direction;
             
-            // Move player in world space
+            // Calculate desired movement
             let movement = world_direction * player.speed * time.delta_seconds();
-            transform.translation += movement;
+            
+            // If colliding with something, reduce movement strength to prevent pushing
+            // This creates a "slide along wall" effect instead of bouncing
+            let movement_scale = if colliding_with.entities.is_empty() {
+                1.0 // No collision - full speed
+            } else {
+                0.1 // Colliding - greatly reduced movement (allows sliding)
+            };
+            
+            // Apply scaled movement
+            transform.translation += movement * movement_scale;
             
             // Rotate player to face movement direction
             if world_direction.length() > 0.0 {
@@ -370,6 +228,28 @@ fn player_movement(
                 );
                 transform.rotation = target_rotation;
             }
+        }
+        
+        // WICHTIG: Verhindere dass Spieler unter den Boden fällt
+        // Minimum Y-Position ist 0.9 (Spieler-Kapsel ist 1.5 hoch, Radius 0.5)
+        // Bei Y=0.9 ist der Boden der Kapsel bei 0.9-0.75 = 0.15, also über Y=0
+        if transform.translation.y < 0.9 {
+            transform.translation.y = 0.9;
+        }
+    }
+}
+
+/// Enforce ground collision - player can NEVER fall below Y=0.9
+/// This runs every frame to catch any collision bugs or physics issues
+fn enforce_ground_collision(
+    mut player_query: Query<&mut Transform, With<Player>>,
+) {
+    const MIN_Y: f32 = 0.9; // Minimum Y position (Spieler-Kapsel ist 1.5 hoch, Radius 0.5)
+    
+    for mut transform in player_query.iter_mut() {
+        if transform.translation.y < MIN_Y {
+            // Snap player back to minimum height
+            transform.translation.y = MIN_Y;
         }
     }
 }

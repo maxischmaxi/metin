@@ -118,6 +118,7 @@ enum DevButton {
     RemoveLevel,
     Add1000XP,
     ResetLevel,
+    TeleportToSpawn, // NEU: Teleport zu (0, 1, 0)
 }
 
 fn setup_game_ui(mut commands: Commands, font: Res<GameFont>, mut ui_stack: ResMut<UILayerStack>) {
@@ -688,6 +689,42 @@ fn setup_dev_panel(
             create_dev_button_compact(row, "→1", DevButton::ResetLevel, Color::srgb(0.5, 0.3, 0.1), font_handle.clone());
         });
 
+        // Teleport button (full width)
+        parent.spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(5.0),
+                ..default()
+            },
+            ..default()
+        }).with_children(|row| {
+            row.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Px(115.0), // Full width
+                        height: Val::Px(25.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.6, 0.2, 0.6).into(), // Purple
+                    ..default()
+                },
+                DevButton::TeleportToSpawn,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "📍 Reset Pos",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 12.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+        });
+
         // Compact instructions
         parent.spawn(TextBundle::from_section(
             "F3: Toggle",
@@ -751,12 +788,23 @@ fn handle_dev_panel_buttons(
     mut interaction_query: Query<(&Interaction, &DevButton), Changed<Interaction>>,
     network: Option<Res<crate::networking::NetworkClient>>,
     player_stats: Res<PlayerStats>,
+    mut player_query: Query<&mut Transform, With<crate::player::Player>>,
 ) {
     for (interaction, button) in interaction_query.iter_mut() {
         if *interaction == Interaction::Pressed {
-            let Some(network) = network.as_ref() else { continue };
-
             match button {
+                DevButton::TeleportToSpawn => {
+                    // Teleport player to spawn (0, 1, 0)
+                    for mut transform in player_query.iter_mut() {
+                        transform.translation = Vec3::new(0.0, 1.0, 0.0);
+                        info!("Dev: Teleported player to spawn (0, 1, 0)");
+                    }
+                }
+                _ => {
+                    // For other buttons, network is required
+                    let Some(network) = network.as_ref() else { continue };
+                    
+                    match button {
                 DevButton::AddLevel => {
                     // Calculate XP needed to reach next level
                     let current_level = player_stats.level;
@@ -803,16 +851,21 @@ fn handle_dev_panel_buttons(
                         info!("Dev: Adding 1000 XP");
                     }
                 }
-                DevButton::ResetLevel => {
-                    // Reset to level 1 (XP = 0)
-                    let xp_to_remove = -(player_stats.experience as i64);
-                    
-                    if let Err(e) = network.send_message(&shared::ClientMessage::GainExperience { 
-                        amount: xp_to_remove 
-                    }) {
-                        error!("Failed to reset level: {}", e);
-                    } else {
-                        info!("Dev: Resetting to level 1");
+                        DevButton::ResetLevel => {
+                            // Reset to level 1 (XP = 0)
+                            let xp_to_remove = -(player_stats.experience as i64);
+                            
+                            if let Err(e) = network.send_message(&shared::ClientMessage::GainExperience { 
+                                amount: xp_to_remove 
+                            }) {
+                                error!("Failed to reset level: {}", e);
+                            } else {
+                                info!("Dev: Resetting to level 1");
+                            }
+                        }
+                        DevButton::TeleportToSpawn => {
+                            // Already handled above
+                        }
                     }
                 }
             }
