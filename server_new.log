@@ -1,0 +1,9 @@
+[2025-11-09T21:27:12Z INFO  server::db] Database connected successfully
+[2025-11-09T21:27:12Z INFO  server::db] Running database migrations...
+[2025-11-09T21:27:12Z INFO  server::db] Migration 001_create_users completed
+[2025-11-09T21:27:12Z INFO  server::db] Migration 002_create_characters completed
+[2025-11-09T21:27:12Z INFO  server::db] All migrations completed successfully
+[2025-11-09T21:27:12Z INFO  server] Database initialized successfully
+[2025-11-09T21:27:12Z INFO  server] Server started on 127.0.0.1:5000
+[2025-11-09T21:27:12Z INFO  server] Game server running. Press Ctrl+C to stop.
+[2025-11-09T22:15:49Z INFO  server::auth::handlers] User 'max' logged in successfully

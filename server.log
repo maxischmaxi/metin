@@ -1,0 +1,14 @@
+[2025-11-09T21:03:17Z INFO  server::db] Database connected successfully
+[2025-11-09T21:03:17Z INFO  server::db] Running database migrations...
+[2025-11-09T21:03:17Z INFO  server::db] Migration 001_create_users completed
+[2025-11-09T21:03:17Z INFO  server::db] Migration 002_create_characters completed
+[2025-11-09T21:03:17Z INFO  server::db] All migrations completed successfully
+[2025-11-09T21:03:17Z INFO  server] Database initialized successfully
+[2025-11-09T21:03:17Z INFO  server] Server started on 127.0.0.1:5000
+[2025-11-09T21:03:17Z INFO  server] Game server running. Press Ctrl+C to stop.
+[2025-11-09T21:05:52Z INFO  server::auth::handlers] User 'max' logged in successfully
+[2025-11-09T21:05:55Z INFO  server] User max selected character 1 (Hero) at position Vec3(19.735186, 1.0, 18.70231)
+[2025-11-09T21:05:55Z INFO  server] Player state created for character 1 at Vec3(19.735186, 1.0, 18.70231)
+[2025-11-09T21:06:11Z INFO  server] Player 127.0.0.1:46834 disconnecting
+[2025-11-09T21:06:11Z INFO  server] Saved position for character 1 on disconnect
+[2025-11-09T21:08:56Z INFO  server] Player 127.0.0.1:46834 disconnecting
