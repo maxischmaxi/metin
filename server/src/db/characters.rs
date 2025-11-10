@@ -21,6 +21,7 @@ pub struct Character {
     pub hair_color_b: f32,
     pub created_at: DateTime<Utc>,
     pub last_played: Option<DateTime<Utc>>,
+    pub specialization: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +90,7 @@ pub async fn get_user_characters(
         class: r.get(2),
         level: r.get(3),
         last_played: r.get(4),
+        // Note: specialization not included in summary for character selection screen
     }).collect())
 }
 
@@ -103,7 +105,7 @@ pub async fn load_character(
                pos_x, pos_y, pos_z,
                skin_color_r, skin_color_g, skin_color_b,
                hair_color_r, hair_color_g, hair_color_b,
-               created_at, last_played
+               created_at, last_played, specialization
         FROM characters
         WHERE id = ?1
         "#
@@ -130,6 +132,7 @@ pub async fn load_character(
         hair_color_b: r.get(14),
         created_at: r.get(15),
         last_played: r.get(16),
+        specialization: r.get(17),
     }))
 }
 
@@ -240,6 +243,11 @@ impl Character {
             _ => CharacterClass::Krieger, // Default to Krieger
         };
 
+        // Parse specialization string to enum
+        let specialization = self.specialization.as_ref().and_then(|s| {
+            shared::Specialization::from_string(s)
+        });
+
         CharacterData {
             name: self.name.clone(),
             class,
@@ -249,7 +257,7 @@ impl Character {
             },
             level: self.level,
             experience: self.experience,
-            specialization: None,  // TODO: Load from DB after migration
+            specialization,
         }
     }
 }
@@ -266,6 +274,23 @@ pub async fn update_level_and_xp(
     )
     .bind(level)
     .bind(experience)
+    .bind(character_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Update character specialization (can only be set once)
+pub async fn update_specialization(
+    pool: &SqlitePool,
+    character_id: i64,
+    specialization: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE characters SET specialization = ?1 WHERE id = ?2"
+    )
+    .bind(specialization)
     .bind(character_id)
     .execute(pool)
     .await?;

@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use bevy::app::AppExit;
 use crate::GameState;
 use crate::GameFont;
-use crate::auth_state::{AuthState, SpawnPosition};
-use crate::networking::{NetworkClient, CharacterResponseEvent};
+use crate::auth_state::AuthState;
+use crate::networking::NetworkClient;
 use super::{button_system, NORMAL_BUTTON};
 use shared::ClientMessage;
 
@@ -17,7 +17,6 @@ impl Plugin for CharacterSelectionPlugin {
                 button_system,
                 character_card_hover_system,
                 character_selection_buttons,
-                handle_character_selected,
             ).run_if(in_state(GameState::CharacterSelection)));
     }
 }
@@ -319,75 +318,5 @@ fn cleanup_character_selection(
     }
 }
 
-/// Handle character selection response from server
-fn handle_character_selected(
-    mut char_events: EventReader<CharacterResponseEvent>,
-    mut spawn_position: ResMut<SpawnPosition>,
-    mut player_stats: ResMut<crate::ui::PlayerStats>,
-    mut auth_state: ResMut<crate::auth_state::AuthState>,
-    mut next_state: ResMut<NextState<GameState>>,
-) {
-    for event in char_events.read() {
-        match event {
-            CharacterResponseEvent::Selected { 
-                character_id,
-                character_name,
-                position,
-                level,
-                experience,
-                max_health,
-                max_mana,
-                max_stamina,
-            } => {
-                info!("Character '{}' (ID: {}) selected (Level {})", character_name, character_id, level);
-                info!("  Spawn position: {:?}", position);
-                info!("  Stats: HP={}, Mana={}, Stamina={}", max_health, max_mana, max_stamina);
-                info!("  XP: {}/{}", experience, shared::calculate_xp_for_level(level + 1));
-                
-                // Set spawn position
-                spawn_position.0 = *position;
-                
-                // Initialize player stats from character data
-                player_stats.character_name = character_name.clone();
-                player_stats.level = *level;
-                player_stats.experience = *experience;
-                player_stats.max_health = *max_health;
-                player_stats.max_mana = *max_mana;
-                player_stats.max_stamina = *max_stamina;
-                player_stats.health = *max_health;  // Start with full health
-                player_stats.mana = *max_mana;      // Start with full mana
-                player_stats.stamina = *max_stamina; // Start with full stamina
-                
-                // Calculate XP needed for next level
-                if *level < 100 {
-                    player_stats.xp_needed = shared::calculate_xp_for_level(level + 1);
-                } else {
-                    player_stats.xp_needed = 0; // Max level
-                }
-                
-                // Store class and specialization from selected character
-                let (class, specialization) = if let Some(selected_char) = auth_state.get_selected_character() {
-                    (Some(selected_char.class), selected_char.specialization)
-                } else {
-                    (None, None)
-                };
-                
-                auth_state.class = class;
-                auth_state.specialization = specialization;
-                
-                if let Some(spec) = specialization {
-                    info!("  Specialization: {}", spec.name());
-                } else {
-                    info!("  No specialization chosen yet (unlocks at Level 5)");
-                }
-                
-                next_state.set(GameState::InGame);
-            }
-            CharacterResponseEvent::SelectionFailed { reason } => {
-                error!("Character selection failed: {}", reason);
-                // TODO: Show error in UI
-            }
-            _ => {}
-        }
-    }
-}
+// NOTE: Character selection handling (handle_character_selected) has been moved to networking.rs
+// as a global handler that works in all game states, not just CharacterSelection state

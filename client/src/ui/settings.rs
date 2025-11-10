@@ -1,11 +1,9 @@
 use bevy::prelude::*;
-use bevy::app::AppExit;
 use bevy::window::{WindowMode, PrimaryWindow};
 use crate::GameState;
 use crate::GameFont;
-use crate::auth_state::AuthState;
 use shared::MMOSettings;
-use super::{button_system, NORMAL_BUTTON};
+use super::{button_system, NORMAL_BUTTON, UILayerStack, UILayerType};
 
 pub struct SettingsPlugin;
 
@@ -53,8 +51,11 @@ struct MusicVolumeDisplay;
 #[derive(Component)]
 struct SfxVolumeDisplay;
 
-fn setup_settings(mut commands: Commands, settings: Res<MMOSettings>, font: Res<GameFont>) {
-    let font_handle = font.0.clone();
+fn setup_settings(mut commands: Commands, settings: Res<MMOSettings>, font: Res<GameFont>, mut ui_stack: ResMut<UILayerStack>) {
+    // Register layer
+    ui_stack.push_layer(UILayerType::Settings);
+    
+    let _font_handle = font.0.clone();
     commands.spawn((
         NodeBundle {
             style: Style {
@@ -327,14 +328,7 @@ fn settings_buttons(
     mut next_state: ResMut<NextState<GameState>>,
     mut settings: ResMut<MMOSettings>,
     mut window_query: Query<&mut Window, With<PrimaryWindow>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    // ESC key to go back to pause menu
-    if keyboard.just_pressed(KeyCode::Escape) {
-        next_state.set(GameState::Paused);
-        return;
-    }
-
     for (interaction, button) in interaction_query.iter_mut() {
         if *interaction == Interaction::Pressed {
             match button {
@@ -415,7 +409,11 @@ fn update_setting_displays(
 fn cleanup_settings(
     mut commands: Commands,
     query: Query<Entity, With<SettingsUI>>,
+    mut ui_stack: ResMut<UILayerStack>,
 ) {
+    // Remove from stack
+    ui_stack.remove_layer(UILayerType::Settings);
+    
     for entity in query.iter() {
         commands.entity(entity).despawn_recursive();
     }

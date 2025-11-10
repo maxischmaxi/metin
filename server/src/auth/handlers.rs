@@ -126,7 +126,7 @@ pub async fn handle_login(
             },
             level: c.level,
             last_played: c.last_played.map(|dt| dt.to_rfc3339()),
-            specialization: None,  // TODO: Load from DB after migration
+            specialization: None, // Note: Specialization is loaded when character is selected, not in summary
         }).collect(),
         Err(e) => {
             log::error!("Error loading characters: {}", e);

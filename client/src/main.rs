@@ -1,5 +1,6 @@
 mod auth_state;
 mod camera;
+mod collision;
 mod interaction;
 mod networking;
 mod npc;
@@ -9,12 +10,13 @@ mod ui;
 use auth_state::{AuthState, SpawnPosition};
 
 use bevy::prelude::*;
-use ui::{LoginPlugin, CharacterCreationPlugin, CharacterSelectionPlugin, GameUIPlugin, SettingsPlugin, PausePlugin, NpcDialogPlugin};
+use ui::{UIStackPlugin, LoginPlugin, CharacterCreationPlugin, CharacterSelectionPlugin, GameUIPlugin, SettingsPlugin, PausePlugin, NpcDialogPlugin};
 use networking::NetworkingPlugin;
 use player::PlayerPlugin;
 use camera::CameraPlugin;
 use npc::NpcPlugin;
 use interaction::InteractionPlugin;
+use collision::CollisionPlugin;
 
 /// Global font resource for UI
 #[derive(Resource)]
@@ -55,10 +57,12 @@ fn main() {
         .add_event::<networking::CharacterResponseEvent>()
         .add_plugins((
             NetworkingPlugin,
+            CollisionPlugin,
             PlayerPlugin,
             CameraPlugin,
             NpcPlugin,
             InteractionPlugin,
+            UIStackPlugin,  // Must be before other UI plugins
             LoginPlugin,
             CharacterSelectionPlugin,
             CharacterCreationPlugin,

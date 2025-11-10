@@ -5,6 +5,7 @@ mod game_ui;
 mod npc_dialog;
 mod pause;
 mod settings;
+mod ui_stack;
 
 pub use login::LoginPlugin;
 pub use character_creation::CharacterCreationPlugin;
@@ -13,6 +14,7 @@ pub use game_ui::{GameUIPlugin, PlayerStats};
 pub use npc_dialog::NpcDialogPlugin;
 pub use pause::PausePlugin;
 pub use settings::SettingsPlugin;
+pub use ui_stack::{UIStackPlugin, UILayerStack, UILayerType};
 
 use bevy::prelude::*;
 

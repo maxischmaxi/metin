@@ -6,7 +6,8 @@ use crate::npc::NpcType;
 use crate::auth_state::AuthState;
 use crate::ui::game_ui::PlayerStats;
 use crate::networking::NetworkClient;
-use shared::{Specialization, CharacterClass, ClientMessage};
+use shared::{Specialization, ClientMessage};
+use super::{UILayerStack, UILayerType};
 
 pub struct NpcDialogPlugin;
 
@@ -43,6 +44,8 @@ fn spawn_npc_dialog(
     if !dialog_state.active || !existing_dialog.is_empty() {
         return;
     }
+    
+    // Note: Layer is registered in mouse_click_system for immediate ESC handling
     
     // Only handle SpecializationTrainer for now
     let Some(NpcType::SpecializationTrainer) = dialog_state.npc_type else { 
@@ -132,9 +135,17 @@ fn spawn_npc_dialog(
             
             // Specialization buttons (only if level >= 5 and no spec chosen)
             if show_spec_buttons {
-                if let Some(class) = auth_state.class {
+                // Try to get class from auth_state first, then from selected character
+                let character_class = auth_state.class.or_else(|| {
+                    auth_state.get_selected_character().map(|c| c.class)
+                });
+                
+                if let Some(class) = character_class {
                     let spec1 = Specialization::from_class_and_index(class, 0).unwrap();
                     let spec2 = Specialization::from_class_and_index(class, 1).unwrap();
+                    
+                    info!("Showing specializations for class {}: {} and {}", 
+                          class.as_str(), spec1.name(), spec2.name());
                     
                     // Spec buttons container
                     parent.spawn(NodeBundle {
@@ -150,6 +161,20 @@ fn spawn_npc_dialog(
                         create_spec_button(parent, spec1, font.0.clone());
                         create_spec_button(parent, spec2, font.0.clone());
                     });
+                } else {
+                    // Fallback: show error if we can't determine class
+                    parent.spawn(TextBundle::from_section(
+                        "Fehler: Charakterklasse konnte nicht ermittelt werden.\nBitte logge dich erneut ein.",
+                        TextStyle {
+                            font: font.0.clone(),
+                            font_size: 18.0,
+                            color: Color::srgb(1.0, 0.3, 0.3),
+                        },
+                    ).with_style(Style {
+                        margin: UiRect::vertical(Val::Px(10.0)),
+                        ..default()
+                    }));
+                    error!("Cannot determine character class for specialization selection!");
                 }
             }
             
@@ -260,7 +285,7 @@ fn create_spec_button(
 }
 
 fn handle_dialog_buttons(
-    mut interaction_query: Query<(&Interaction, &DialogButton), Changed<Interaction>>,
+    interaction_query: Query<(&Interaction, &DialogButton), Changed<Interaction>>,
     mut dialog_state: ResMut<NpcDialogState>,
     mut auth_state: ResMut<AuthState>,
     network: Option<Res<NetworkClient>>,
@@ -301,8 +326,12 @@ fn cleanup_closed_dialog(
     mut commands: Commands,
     dialog_state: Res<NpcDialogState>,
     dialog_query: Query<Entity, With<NpcDialogUI>>,
+    mut ui_stack: ResMut<UILayerStack>,
 ) {
     if !dialog_state.active && !dialog_query.is_empty() {
+        // Remove from stack
+        ui_stack.remove_layer(UILayerType::NpcDialog);
+        
         for entity in dialog_query.iter() {
             commands.entity(entity).despawn_recursive();
         }

@@ -142,6 +142,50 @@ impl Specialization {
             ],
         }
     }
+    
+    /// Convert specialization to database string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Specialization::Leibwaechter => "Leibwaechter",
+            Specialization::Gladiator => "Gladiator",
+            Specialization::Bogenschuetze => "Bogenschuetze",
+            Specialization::Attentaeter => "Attentaeter",
+            Specialization::DaemonenJaeger => "DaemonenJaeger",
+            Specialization::Blutkrieger => "Blutkrieger",
+            Specialization::Lebenshueter => "Lebenshueter",
+            Specialization::Sturmrufer => "Sturmrufer",
+        }
+    }
+    
+    /// Parse specialization from database string
+    pub fn from_string(s: &str) -> Option<Self> {
+        match s {
+            "Leibwaechter" => Some(Specialization::Leibwaechter),
+            "Gladiator" => Some(Specialization::Gladiator),
+            "Bogenschuetze" => Some(Specialization::Bogenschuetze),
+            "Attentaeter" => Some(Specialization::Attentaeter),
+            "DaemonenJaeger" => Some(Specialization::DaemonenJaeger),
+            "Blutkrieger" => Some(Specialization::Blutkrieger),
+            "Lebenshueter" => Some(Specialization::Lebenshueter),
+            "Sturmrufer" => Some(Specialization::Sturmrufer),
+            _ => None,
+        }
+    }
+    
+    /// Check if this specialization is valid for the given class
+    pub fn is_valid_for_class(&self, class: CharacterClass) -> bool {
+        match (class, self) {
+            (CharacterClass::Krieger, Specialization::Leibwaechter) => true,
+            (CharacterClass::Krieger, Specialization::Gladiator) => true,
+            (CharacterClass::Ninja, Specialization::Bogenschuetze) => true,
+            (CharacterClass::Ninja, Specialization::Attentaeter) => true,
+            (CharacterClass::Sura, Specialization::DaemonenJaeger) => true,
+            (CharacterClass::Sura, Specialization::Blutkrieger) => true,
+            (CharacterClass::Schamane, Specialization::Lebenshueter) => true,
+            (CharacterClass::Schamane, Specialization::Sturmrufer) => true,
+            _ => false,
+        }
+    }
 }
 
 // Skill definitions
@@ -377,6 +421,7 @@ pub enum ServerMessage {
     CharacterSelected { 
         character_id: i64,
         character_name: String,
+        character_class: CharacterClass,
         position: Vec3,
         level: i32,
         experience: i64,

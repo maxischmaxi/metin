@@ -3,6 +3,7 @@ use crate::GameState;
 use crate::camera::OrbitCamera;
 use crate::auth_state::SpawnPosition;
 use crate::networking::NetworkClient;
+use crate::collision::{Collider, ColliderShape, CollisionType, CollisionLayer, CollidingWith, CollisionPushback};
 use crate::GameFont;
 use shared::ClientMessage;
 use std::time::Duration;
@@ -82,6 +83,16 @@ fn setup_player(
                 ..default()
             },
             Player { speed: 5.0 },
+            Collider {
+                shape: ColliderShape::Cylinder {
+                    radius: 0.5,
+                    height: 1.5,
+                },
+                collision_type: CollisionType::Dynamic,
+                layer: CollisionLayer::Player,  // Phase 3
+            },
+            CollisionPushback { strength: 0.8 },
+            CollidingWith::default(),
             LastSentPosition(spawn_pos),
             GameWorld,
         ));
@@ -103,6 +114,63 @@ fn setup_player(
                 material: materials.add(Color::srgb(0.3, 0.7, 0.3)),
                 ..default()
             },
+            GameWorld,
+        ));
+
+        // Spawn some static obstacles for collision testing
+        // Tree at (-3, 0, 3)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Cylinder::new(0.3, 2.0)),
+                material: materials.add(Color::srgb(0.4, 0.25, 0.1)),
+                transform: Transform::from_xyz(-3.0, 1.0, 3.0),
+                ..default()
+            },
+            Collider {
+                shape: ColliderShape::Cylinder {
+                    radius: 0.3,
+                    height: 2.0,
+                },
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,  // Phase 3
+            },
+            CollidingWith::default(),
+            GameWorld,
+        ));
+        
+        // Rock at (3, 0, -3)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(0.5)),
+                material: materials.add(Color::srgb(0.5, 0.5, 0.5)),
+                transform: Transform::from_xyz(3.0, 0.5, -3.0),
+                ..default()
+            },
+            Collider {
+                shape: ColliderShape::Sphere { radius: 0.5 },
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,  // Phase 3
+            },
+            CollidingWith::default(),
+            GameWorld,
+        ));
+        
+        // Wall at (0, 0, -8)
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Cuboid::new(6.0, 2.0, 0.5)),
+                material: materials.add(Color::srgb(0.6, 0.5, 0.4)),
+                transform: Transform::from_xyz(0.0, 1.0, -8.0),
+                ..default()
+            },
+            Collider {
+                shape: ColliderShape::Box {
+                    half_extents: Vec3::new(3.0, 1.0, 0.25),
+                },
+                collision_type: CollisionType::Static,
+                layer: CollisionLayer::World,  // Phase 3
+            },
+            CollidingWith::default(),
             GameWorld,
         ));
 

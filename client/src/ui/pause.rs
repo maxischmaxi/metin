@@ -3,7 +3,7 @@ use bevy::app::AppExit;
 use crate::GameState;
 use crate::GameFont;
 use crate::auth_state::AuthState;
-use super::{button_system, NORMAL_BUTTON};
+use super::{button_system, NORMAL_BUTTON, UILayerStack, UILayerType};
 
 pub struct PausePlugin;
 
@@ -30,7 +30,10 @@ enum PauseButton {
     QuitGame,
 }
 
-fn setup_pause(mut commands: Commands, font: Res<GameFont>) {
+fn setup_pause(mut commands: Commands, font: Res<GameFont>, mut ui_stack: ResMut<UILayerStack>) {
+    // Register layer
+    ui_stack.push_layer(UILayerType::PauseMenu);
+    
     let font_handle = font.0.clone();
     commands.spawn((
         NodeBundle {
@@ -229,14 +232,7 @@ fn pause_buttons(
     mut next_state: ResMut<NextState<GameState>>,
     mut auth_state: ResMut<AuthState>,
     mut exit: EventWriter<AppExit>,
-    keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    // ESC key to resume
-    if keyboard.just_pressed(KeyCode::Escape) {
-        next_state.set(GameState::InGame);
-        return;
-    }
-
     for (interaction, button) in interaction_query.iter_mut() {
         if *interaction == Interaction::Pressed {
             match button {
@@ -268,7 +264,11 @@ fn pause_buttons(
 fn cleanup_pause(
     mut commands: Commands,
     query: Query<Entity, With<PauseUI>>,
+    mut ui_stack: ResMut<UILayerStack>,
 ) {
+    // Remove from stack
+    ui_stack.remove_layer(UILayerType::PauseMenu);
+    
     for entity in query.iter() {
         commands.entity(entity).despawn_recursive();
     }

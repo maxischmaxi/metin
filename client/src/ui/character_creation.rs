@@ -3,9 +3,9 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use crate::GameState;
 use crate::GameFont;
-use crate::networking::{NetworkClient, send_create_character};
+use crate::networking::{NetworkClient, send_create_character, CharacterResponseEvent};
 use crate::auth_state::AuthState;
-use shared::{CharacterClass, CharacterData, CharacterAppearance};
+use shared::{CharacterClass, CharacterData, CharacterAppearance, ClientMessage};
 use super::{button_system, NORMAL_BUTTON};
 
 pub struct CharacterCreationPlugin;
@@ -21,6 +21,7 @@ impl Plugin for CharacterCreationPlugin {
                 update_character_preview,
                 handle_text_input,
                 update_name_display,
+                handle_character_created,
             ).run_if(in_state(GameState::CharacterCreation)));
     }
 }
@@ -325,9 +326,10 @@ fn character_creation_buttons(
                         if let Some(network) = network.as_ref() {
                             match send_create_character(network, token, character) {
                                 Ok(_) => {
-                                    info!("Character creation request sent");
-                                    // TODO: Wait for server response before transitioning
-                                    next_state.set(GameState::InGame);
+                                    info!("Character creation request sent - waiting for server response");
+                                    // NOTE: We wait for CharacterCreated event before transitioning
+                                    // The handle_character_created system will automatically select 
+                                    // the new character and transition to InGame
                                 }
                                 Err(e) => {
                                     error!("Failed to send character creation: {}", e);
@@ -460,6 +462,47 @@ fn update_character_preview(
                 CharacterClass::Schamane => "Schamane",
             };
             text.sections[0].value = format!("Gewählte Klasse: {}", class_name);
+        }
+    }
+}
+
+/// Handle CharacterCreated event - automatically select the new character
+fn handle_character_created(
+    mut char_events: EventReader<CharacterResponseEvent>,
+    auth_state: Res<AuthState>,
+    network: Option<Res<NetworkClient>>,
+) {
+    for event in char_events.read() {
+        match event {
+            CharacterResponseEvent::Created { character_id } => {
+                info!("Character created with ID: {} - auto-selecting", character_id);
+                
+                // Automatically select the newly created character
+                if let Some(token) = auth_state.get_token() {
+                    if let Some(network) = network.as_ref() {
+                        let select_msg = ClientMessage::SelectCharacter {
+                            token: token.to_string(),
+                            character_id: *character_id,
+                        };
+                        
+                        match network.send_message(&select_msg) {
+                            Ok(_) => {
+                                info!("Auto-select character request sent");
+                                // The CharacterSelected event will be handled by character_selection.rs
+                                // which will initialize PlayerStats and transition to InGame
+                            }
+                            Err(e) => {
+                                error!("Failed to auto-select character: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            CharacterResponseEvent::CreationFailed { reason } => {
+                error!("Character creation failed: {}", reason);
+                // TODO: Show error message in UI
+            }
+            _ => {}
         }
     }
 }

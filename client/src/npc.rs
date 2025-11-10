@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use crate::GameState;
 use crate::player::GameWorld;
+use crate::collision::{Collider, ColliderShape, CollisionType, CollisionLayer, CollidingWith};
 
 pub struct NpcPlugin;
 
@@ -59,6 +60,15 @@ fn spawn_npcs(
                 name: name.to_string(),
                 npc_type: *npc_type,
             },
+            Collider {
+                shape: ColliderShape::Cylinder {
+                    radius: 0.4,
+                    height: 1.8,
+                },
+                collision_type: CollisionType::Static, // NPCs don't move
+                layer: CollisionLayer::NPC,  // Phase 3
+            },
+            CollidingWith::default(),
             GameWorld,
         ));
     }

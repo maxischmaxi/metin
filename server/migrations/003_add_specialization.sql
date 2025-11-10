@@ -1,5 +1,4 @@
--- Add specialization column to characters table
-ALTER TABLE characters ADD COLUMN specialization TEXT;
-
--- Create index for faster lookups
-CREATE INDEX idx_characters_specialization ON characters(specialization);
+-- Create index for faster lookups (IF NOT EXISTS supported)
+-- Note: We only create the index here because the column might already exist
+-- from a previous migration attempt. The server code handles the ALTER TABLE separately.
+CREATE INDEX IF NOT EXISTS idx_characters_specialization ON characters(specialization);

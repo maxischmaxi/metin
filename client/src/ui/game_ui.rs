@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use crate::GameState;
 use crate::GameFont;
-use super::button_system;
+use super::{button_system, UILayerStack, UILayerType};
 
 pub struct GameUIPlugin;
 
@@ -59,9 +59,6 @@ impl Default for PlayerStats {
 
 #[derive(Component)]
 struct GameUI;
-
-#[derive(Component)]
-struct InstructionsText;
 
 #[derive(Component)]
 struct HealthBar;
@@ -123,7 +120,10 @@ enum DevButton {
     ResetLevel,
 }
 
-fn setup_game_ui(mut commands: Commands, font: Res<GameFont>) {
+fn setup_game_ui(mut commands: Commands, font: Res<GameFont>, mut ui_stack: ResMut<UILayerStack>) {
+    // Register base game UI layer
+    ui_stack.push_layer(UILayerType::GameUI);
+    
     let font_handle = font.0.clone();
     
     commands.spawn((
@@ -140,25 +140,6 @@ fn setup_game_ui(mut commands: Commands, font: Res<GameFont>) {
         GameUI,
     ))
     .with_children(|parent| {
-        // Top - Instructions
-        parent.spawn((
-            TextBundle::from_section(
-                "WASD - Bewegen | Rechte Maustaste - Kamera | Mausrad - Zoom | K - +1000 XP (Dev) | ESC - Menü",
-                TextStyle {
-                    font: font_handle.clone(),
-                    font_size: 16.0,
-                    color: Color::srgba(1.0, 1.0, 1.0, 0.7),
-                    ..default()
-                },
-            ).with_style(Style {
-                position_type: PositionType::Absolute,
-                top: Val::Px(10.0),
-                left: Val::Px(10.0),
-                ..default()
-            }),
-            InstructionsText,
-        ));
-
         // Bottom Bar Container - ABSOLUTE POSITIONING (KOMPAKT)
         parent.spawn(NodeBundle {
             style: Style {
@@ -565,7 +546,7 @@ fn update_stat_bars(
 }
 
 fn handle_bottom_bar_buttons(
-    mut interaction_query: Query<(&Interaction, &BottomBarButton), Changed<Interaction>>,
+    interaction_query: Query<(&Interaction, &BottomBarButton), Changed<Interaction>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
     for (interaction, button) in interaction_query.iter() {
@@ -589,12 +570,9 @@ fn handle_bottom_bar_buttons(
 }
 
 fn update_instructions(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut next_state: ResMut<NextState<GameState>>,
+    _keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    if keyboard.just_pressed(KeyCode::Escape) {
-        next_state.set(GameState::Paused);
-    }
+    // ESC handling is now centralized in ui_stack.rs
 }
 
 fn update_xp_bar(
@@ -641,7 +619,7 @@ fn handle_dev_xp_key(
 // DEV MODE PANEL
 // ============================================================================
 
-/// Setup dev mode panel (top-right corner)
+/// Setup dev mode panel (top-right corner) - Compact version
 fn setup_dev_panel(
     mut commands: Commands,
     font: Res<GameFont>,
@@ -657,127 +635,73 @@ fn setup_dev_panel(
                 top: Val::Px(10.0),
                 right: Val::Px(10.0),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(15.0)),
-                row_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                row_gap: Val::Px(5.0),
                 display: if dev_mode.enabled { Display::Flex } else { Display::None },
                 ..default()
             },
-            background_color: Color::srgba(0.1, 0.1, 0.15, 0.95).into(),
-            border_radius: BorderRadius::all(Val::Px(8.0)),
+            background_color: Color::srgba(0.0, 0.0, 0.0, 0.85).into(),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
             ..default()
         },
         DevPanel,
         GameUI,
     ))
     .with_children(|parent| {
-        // Title
-        parent.spawn(TextBundle::from_section(
-            "🔧 DEV MODE",
-            TextStyle {
-                font: font_handle.clone(),
-                font_size: 20.0,
-                color: Color::srgb(1.0, 0.7, 0.2),
-                ..default()
-            },
-        ));
-
-        // Current Level Display
+        // Title with Level Display (compact)
         parent.spawn((
             TextBundle::from_section(
-                format!("Level: {}", player_stats.level),
+                format!("🔧 DEV | Lvl {}", player_stats.level),
                 TextStyle {
                     font: font_handle.clone(),
-                    font_size: 18.0,
-                    color: Color::srgb(0.3, 1.0, 0.3),
+                    font_size: 14.0,
+                    color: Color::srgb(1.0, 0.8, 0.2),
                     ..default()
                 },
             ),
             DevLevelText,
         ));
 
-        // Separator
+        // Row container for level buttons
         parent.spawn(NodeBundle {
             style: Style {
-                width: Val::Percent(100.0),
-                height: Val::Px(1.0),
-                margin: UiRect {
-                    top: Val::Px(5.0),
-                    bottom: Val::Px(5.0),
-                    ..default()
-                },
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(5.0),
                 ..default()
             },
-            background_color: Color::srgb(0.4, 0.4, 0.4).into(),
             ..default()
+        }).with_children(|row| {
+            create_dev_button_compact(row, "+Lvl", DevButton::AddLevel, Color::srgb(0.2, 0.6, 0.2), font_handle.clone());
+            create_dev_button_compact(row, "-Lvl", DevButton::RemoveLevel, Color::srgb(0.7, 0.2, 0.2), font_handle.clone());
         });
 
-        // Level Buttons
+        // Row container for XP buttons
+        parent.spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(5.0),
+                ..default()
+            },
+            ..default()
+        }).with_children(|row| {
+            create_dev_button_compact(row, "+1K", DevButton::Add1000XP, Color::srgb(0.2, 0.4, 0.7), font_handle.clone());
+            create_dev_button_compact(row, "→1", DevButton::ResetLevel, Color::srgb(0.5, 0.3, 0.1), font_handle.clone());
+        });
+
+        // Compact instructions
         parent.spawn(TextBundle::from_section(
-            "Level:",
+            "F3: Toggle",
             TextStyle {
                 font: font_handle.clone(),
-                font_size: 16.0,
-                color: Color::srgb(0.8, 0.8, 0.8),
+                font_size: 10.0,
+                color: Color::srgb(0.4, 0.4, 0.4),
                 ..default()
             },
         ));
-
-        // +1 Level Button
-        create_dev_button(parent, "+ Level", DevButton::AddLevel, Color::srgb(0.2, 0.7, 0.2), font_handle.clone());
-
-        // -1 Level Button
-        create_dev_button(parent, "- Level", DevButton::RemoveLevel, Color::srgb(0.8, 0.3, 0.3), font_handle.clone());
-
-        // Separator
-        parent.spawn(NodeBundle {
-            style: Style {
-                width: Val::Percent(100.0),
-                height: Val::Px(1.0),
-                margin: UiRect {
-                    top: Val::Px(5.0),
-                    bottom: Val::Px(5.0),
-                    ..default()
-                },
-                ..default()
-            },
-            background_color: Color::srgb(0.4, 0.4, 0.4).into(),
-            ..default()
-        });
-
-        // XP Buttons
-        parent.spawn(TextBundle::from_section(
-            "Experience:",
-            TextStyle {
-                font: font_handle.clone(),
-                font_size: 16.0,
-                color: Color::srgb(0.8, 0.8, 0.8),
-                ..default()
-            },
-        ));
-
-        // +1000 XP Button
-        create_dev_button(parent, "+1000 XP", DevButton::Add1000XP, Color::srgb(0.3, 0.5, 0.8), font_handle.clone());
-
-        // Reset to Level 1 Button
-        create_dev_button(parent, "Reset to Lvl 1", DevButton::ResetLevel, Color::srgb(0.6, 0.4, 0.1), font_handle.clone());
-
-        // Instructions
-        parent.spawn(TextBundle::from_section(
-            "Press F3 to toggle",
-            TextStyle {
-                font: font_handle.clone(),
-                font_size: 12.0,
-                color: Color::srgb(0.5, 0.5, 0.5),
-                ..default()
-            },
-        ).with_style(Style {
-            margin: UiRect::top(Val::Px(10.0)),
-            ..default()
-        }));
     });
 }
 
-fn create_dev_button(
+fn create_dev_button_compact(
     parent: &mut ChildBuilder,
     label: &str,
     button_type: DevButton,
@@ -787,8 +711,8 @@ fn create_dev_button(
     parent.spawn((
         ButtonBundle {
             style: Style {
-                width: Val::Px(150.0),
-                height: Val::Px(35.0),
+                width: Val::Px(55.0),
+                height: Val::Px(25.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -803,7 +727,7 @@ fn create_dev_button(
             label,
             TextStyle {
                 font,
-                font_size: 16.0,
+                font_size: 12.0,
                 color: Color::WHITE,
                 ..default()
             },
@@ -850,17 +774,21 @@ fn handle_dev_panel_buttons(
                 }
                 DevButton::RemoveLevel => {
                     if player_stats.level > 1 {
-                        // Calculate XP for previous level
-                        let prev_level = player_stats.level - 1;
-                        let xp_for_prev = shared::calculate_xp_for_level(prev_level);
-                        let xp_to_remove = -(player_stats.experience as i64 - xp_for_prev);
+                        // Send negative XP to trigger level-down on server
+                        // At level 100 with 0 XP, we still need to send negative
+                        // to trigger the level-down
+                        let xp_to_remove = if player_stats.experience > 0 {
+                            -(player_stats.experience + 1)
+                        } else {
+                            -1  // At 0 XP, send -1 to trigger level-down
+                        };
                         
                         if let Err(e) = network.send_message(&shared::ClientMessage::GainExperience { 
                             amount: xp_to_remove 
                         }) {
-                            error!("Failed to send RemoveLevel XP: {}", e);
+                            error!("Failed to send RemoveLevel: {}", e);
                         } else {
-                            info!("Dev: Removing level (sending {} XP)", xp_to_remove);
+                            info!("Dev: -1 Level from {} (sending {} XP)", player_stats.level, xp_to_remove);
                         }
                     } else {
                         warn!("Already at level 1, cannot remove level");
@@ -911,7 +839,7 @@ fn update_dev_panel_text(
 ) {
     if player_stats.is_changed() {
         for mut text in text_query.iter_mut() {
-            text.sections[0].value = format!("Level: {}", player_stats.level);
+            text.sections[0].value = format!("🔧 DEV | Lvl {}", player_stats.level);
         }
     }
 }
@@ -919,7 +847,11 @@ fn update_dev_panel_text(
 fn cleanup_game_ui(
     mut commands: Commands,
     query: Query<Entity, With<GameUI>>,
+    mut ui_stack: ResMut<UILayerStack>,
 ) {
+    // Remove from stack
+    ui_stack.remove_layer(UILayerType::GameUI);
+    
     for entity in query.iter() {
         commands.entity(entity).despawn_recursive();
     }

@@ -2,6 +2,7 @@ pub mod users;
 pub mod characters;
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::Row;
 use std::path::Path;
 
 /// Initialize database and run migrations
@@ -57,6 +58,33 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     log::info!("Migration 002_create_characters completed");
+
+    // Migration 003: Add specialization column
+    // Check if column already exists first
+    let column_exists = sqlx::query("PRAGMA table_info(characters)")
+        .fetch_all(pool)
+        .await?
+        .iter()
+        .any(|row| {
+            let name: String = row.get(1);
+            name == "specialization"
+        });
+    
+    if !column_exists {
+        // Add the column
+        sqlx::query("ALTER TABLE characters ADD COLUMN specialization TEXT")
+            .execute(pool)
+            .await?;
+        log::info!("Migration 003_add_specialization: Column added");
+    } else {
+        log::info!("Migration 003_add_specialization: Column already exists");
+    }
+    
+    // Always try to create the index (IF NOT EXISTS handles duplicates)
+    sqlx::query(include_str!("../../migrations/003_add_specialization.sql"))
+        .execute(pool)
+        .await?;
+    log::info!("Migration 003_add_specialization completed");
 
     log::info!("All migrations completed successfully");
     Ok(())

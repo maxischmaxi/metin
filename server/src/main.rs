@@ -127,14 +127,7 @@ impl GameServer {
                 self.handle_gain_experience(client_addr, amount).await;
             }
             ClientMessage::ChooseSpecialization { token, specialization } => {
-                // TODO: Implement specialization choice
-                log::info!("Player {} wants to choose specialization: {:?}", client_addr, specialization);
-                self.send_response(
-                    client_addr,
-                    ServerMessage::SpecializationFailed {
-                        reason: "Not implemented yet".to_string(),
-                    },
-                );
+                self.handle_choose_specialization(client_addr, token, specialization).await;
             }
             ClientMessage::Disconnect => {
                 let addr_str = client_addr.to_string();
@@ -271,17 +264,23 @@ impl GameServer {
                     let (max_health, max_mana, max_stamina) = 
                         shared::calculate_stats_for_level(character.level, &char_class);
                     
-                    // Send character_id, name, position, level, XP, and stats to client
+                    // Parse specialization from DB
+                    let specialization = character.specialization.as_ref().and_then(|s| {
+                        shared::Specialization::from_string(s)
+                    });
+                    
+                    // Send character_id, name, class, position, level, XP, and stats to client
                     self.send_response(client_addr, ServerMessage::CharacterSelected { 
                         character_id,
                         character_name: character.name.clone(),
+                        character_class: char_class,
                         position,
                         level: character.level,
                         experience: character.experience,
                         max_health,
                         max_mana,
                         max_stamina,
-                        specialization: None,  // TODO: Load from DB
+                        specialization,
                     });
                 }
             }
@@ -312,12 +311,13 @@ impl GameServer {
 
         match db::characters::delete_character(&self.db_pool, character_id, session.user_id).await {
             Ok(true) => {
-                log::info!("Character {} deleted by user {}", character_id, session.username);
-                self.send_response(client_addr, ServerMessage::CharacterDeleted { character_id });
+                self.send_response(client_addr, ServerMessage::CharacterDeleted {
+                    character_id,
+                });
             }
             Ok(false) => {
                 self.send_response(client_addr, ServerMessage::CharacterDeletionFailed {
-                    reason: "Character not found or not owned by user".to_string(),
+                    reason: "Character not found or not owned by you".to_string(),
                 });
             }
             Err(e) => {
@@ -325,6 +325,157 @@ impl GameServer {
                 self.send_response(client_addr, ServerMessage::CharacterDeletionFailed {
                     reason: "Internal server error".to_string(),
                 });
+            }
+        }
+    }
+
+    async fn handle_choose_specialization(
+        &mut self,
+        client_addr: SocketAddr,
+        token: String,
+        specialization: shared::Specialization,
+    ) {
+        // 1. Validate token
+        let session = match self.session_manager.validate_token(&token) {
+            Some(s) => s,
+            None => {
+                self.send_response(
+                    client_addr,
+                    ServerMessage::SpecializationFailed {
+                        reason: "Invalid or expired token".to_string(),
+                    },
+                );
+                return;
+            }
+        };
+
+        let user_id = session.user_id;
+
+        // 2. Get current character ID from session
+        let character_id = match session.character_id {
+            Some(id) => id,
+            None => {
+                self.send_response(
+                    client_addr,
+                    ServerMessage::SpecializationFailed {
+                        reason: "No character selected".to_string(),
+                    },
+                );
+                return;
+            }
+        };
+
+        // 3. Load character from database
+        let character = match db::characters::load_character(&self.db_pool, character_id).await {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                self.send_response(
+                    client_addr,
+                    ServerMessage::SpecializationFailed {
+                        reason: "Character not found".to_string(),
+                    },
+                );
+                return;
+            }
+            Err(e) => {
+                log::error!("Error loading character: {}", e);
+                self.send_response(
+                    client_addr,
+                    ServerMessage::SpecializationFailed {
+                        reason: "Internal server error".to_string(),
+                    },
+                );
+                return;
+            }
+        };
+
+        // 4. Verify ownership
+        if character.user_id != user_id {
+            self.send_response(
+                client_addr,
+                ServerMessage::SpecializationFailed {
+                    reason: "Character does not belong to you".to_string(),
+                },
+            );
+            return;
+        }
+
+        // 5. Check level requirement (must be at least level 5)
+        if character.level < 5 {
+            self.send_response(
+                client_addr,
+                ServerMessage::SpecializationFailed {
+                    reason: format!("You must reach level 5 first (current: {})", character.level),
+                },
+            );
+            return;
+        }
+
+        // 6. Check if specialization already chosen
+        if character.specialization.is_some() {
+            self.send_response(
+                client_addr,
+                ServerMessage::SpecializationFailed {
+                    reason: "You have already chosen a specialization".to_string(),
+                },
+            );
+            return;
+        }
+
+        // 7. Verify specialization matches character class
+        let char_class = match character.class.as_str() {
+            "Krieger" => shared::CharacterClass::Krieger,
+            "Ninja" => shared::CharacterClass::Ninja,
+            "Sura" => shared::CharacterClass::Sura,
+            "Schamane" => shared::CharacterClass::Schamane,
+            _ => shared::CharacterClass::Krieger,
+        };
+
+        if !specialization.is_valid_for_class(char_class) {
+            self.send_response(
+                client_addr,
+                ServerMessage::SpecializationFailed {
+                    reason: format!(
+                        "Specialization {} is not valid for class {}",
+                        specialization.name(),
+                        char_class.as_str()
+                    ),
+                },
+            );
+            return;
+        }
+
+        // 8. Save specialization to database
+        let spec_str = specialization.as_str();
+        match db::characters::update_specialization(&self.db_pool, character_id, spec_str).await {
+            Ok(_) => {
+                log::info!(
+                    "Character {} (user {}) chose specialization: {}",
+                    character.name,
+                    user_id,
+                    specialization.name()
+                );
+
+                // Update player state if they're in the world
+                let addr_str = client_addr.to_string();
+                if let Some(player) = self.players.get_mut(&addr_str) {
+                    player.character.specialization = Some(specialization);
+                }
+
+                // Send success response
+                self.send_response(
+                    client_addr,
+                    ServerMessage::SpecializationChosen { specialization },
+                );
+            }
+            Err(e) => {
+                log::error!("Error saving specialization: {}", e);
+                self.send_response(
+                    client_addr,
+                    ServerMessage::SpecializationFailed {
+                        reason: "Failed to save specialization".to_string(),
+                    },
+                );
             }
         }
     }
@@ -411,26 +562,41 @@ impl GameServer {
             (player.character_id, player.character.level, player.character.experience, player.character.class.clone())
         };
         
-        // Add experience
+        // Add experience (can be negative for level down)
         let mut new_xp = current_xp + amount;
         
         log::info!("Character {} gained {} XP (total: {})", character_id, amount, new_xp);
         
-        // Check for level-ups (can level multiple times if huge XP gain)
         let mut new_level = current_level;
-        let mut leveled_up = false;
+        let mut level_changed = false;
         
-        while new_level < 100 {
-            let xp_needed = shared::calculate_xp_for_level(new_level + 1);
-            
-            if new_xp >= xp_needed {
-                // Level up!
-                new_xp -= xp_needed;
-                new_level += 1;
-                leveled_up = true;
-                log::info!("Character {} leveled up to {}!", character_id, new_level);
+        // Handle level-downs FIRST (negative XP) - for DEV commands
+        if new_xp < 0 {
+            if new_level > 1 {
+                // Go down one level and set XP to 0
+                new_level -= 1;
+                new_xp = 0;
+                level_changed = true;
+                log::info!("DEV: Character {} leveled DOWN to {} (XP reset to 0)", character_id, new_level);
             } else {
-                break;
+                // At level 1, just set XP to 0
+                new_xp = 0;
+                log::info!("DEV: Character {} already at level 1, XP reset to 0", character_id);
+            }
+        } else {
+            // Handle level-ups (positive XP) - only if XP is positive!
+            while new_level < 100 {
+                let xp_needed = shared::calculate_xp_for_level(new_level + 1);
+                
+                if new_xp >= xp_needed {
+                    // Level up!
+                    new_xp -= xp_needed;
+                    new_level += 1;
+                    level_changed = true;
+                    log::info!("Character {} leveled UP to {}!", character_id, new_level);
+                } else {
+                    break;
+                }
             }
         }
         
@@ -454,8 +620,8 @@ impl GameServer {
             xp_needed,
         });
         
-        // If leveled up, send level-up message with new stats
-        if leveled_up {
+        // If level changed (up or down), send level-up message with new stats
+        if level_changed {
             let char_class = match character_class.as_str() {
                 "Krieger" => shared::CharacterClass::Krieger,
                 "Ninja" => shared::CharacterClass::Ninja,

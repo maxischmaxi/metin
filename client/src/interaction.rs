@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use crate::GameState;
 use crate::npc::{Npc, NpcType};
 use crate::player::Player;
+use crate::ui::{UILayerStack, UILayerType};
 
 pub struct InteractionPlugin;
 
@@ -54,6 +55,7 @@ fn mouse_click_system(
     npc_query: Query<(Entity, &Transform, &Npc)>,
     player_query: Query<&Transform, With<Player>>,
     mut npc_dialog_state: ResMut<NpcDialogState>,
+    mut ui_stack: ResMut<UILayerStack>,
 ) {
     // Only process left mouse button clicks
     if !mouse_button.just_pressed(MouseButton::Left) {
@@ -96,6 +98,8 @@ fn mouse_click_system(
             if distance < 1.5 {
                 // Successfully clicked on NPC!
                 npc_dialog_state.open_dialog(entity, npc.npc_type, npc.name.clone());
+                // Register UI layer immediately so ESC handler sees it
+                ui_stack.push_layer(UILayerType::NpcDialog);
                 break;
             }
         }
