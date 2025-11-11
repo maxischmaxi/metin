@@ -141,6 +141,7 @@ fn process_incoming_messages(
     mut auth_events: EventWriter<AuthResponseEvent>,
     mut char_events: EventWriter<CharacterResponseEvent>,
     mut leveling_events: EventWriter<LevelingEvent>,
+    mut game_time: ResMut<crate::skybox::GameTime>,
 ) {
     let Some(network) = network else { return };
     
@@ -188,6 +189,16 @@ fn process_incoming_messages(
                     new_max_mana, 
                     new_max_stamina 
                 });
+            }
+            ServerMessage::TimeUpdate { hour } => {
+                // Receive initial time from server (only once after login)
+                if !game_time.time_synced {
+                    game_time.sync_from_server(hour);
+                    info!("✅ Time synchronized from server: {:02.1}:00", hour);
+                } else {
+                    // Ignore subsequent time updates (shouldn't happen but just in case)
+                    debug!("Ignoring time update - already synced");
+                }
             }
             _ => {
                 // Handle other messages (gameplay, etc.)

@@ -123,6 +123,7 @@ impl Plugin for UIStackPlugin {
 }
 
 /// Centralized ESC key handler - processes topmost layer first
+/// NOTE: Pause menu is now handled in game_ui.rs (no state change!)
 fn handle_escape_key(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut ui_stack: ResMut<UILayerStack>,
@@ -147,29 +148,20 @@ fn handle_escape_key(
                 ui_stack.remove_layer(UILayerType::NpcDialog);
             }
             UILayerType::Settings => {
-                // Back to pause menu
-                next_state.set(GameState::Paused);
+                // Back to InGame (settings opened from pause menu overlay)
+                next_state.set(GameState::InGame);
                 ui_stack.remove_layer(UILayerType::Settings);
             }
             UILayerType::PauseMenu => {
-                // Resume game
-                next_state.set(GameState::InGame);
+                // This layer type is now unused - pause menu is an overlay in InGame
+                // Just remove it if it exists
                 ui_stack.remove_layer(UILayerType::PauseMenu);
             }
             UILayerType::GameUI => {
-                // Open pause menu (only if in game)
-                if *current_state.get() == GameState::InGame {
-                    next_state.set(GameState::Paused);
-                    ui_stack.push_layer(UILayerType::PauseMenu);
-                }
+                // ESC in GameUI is now handled by game_ui.rs (pause menu toggle)
+                // Do nothing here to avoid conflicts
             }
         }
-    } else {
-        // No layers on stack - default behavior
-        if *current_state.get() == GameState::InGame {
-            info!("ESC pressed - opening pause menu (no layers)");
-            next_state.set(GameState::Paused);
-            ui_stack.push_layer(UILayerType::PauseMenu);
-        }
     }
+    // Note: Pause menu toggle is now handled in game_ui.rs, not here!
 }

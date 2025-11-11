@@ -10,7 +10,7 @@ mod ui_stack;
 pub use login::LoginPlugin;
 pub use character_creation::CharacterCreationPlugin;
 pub use character_selection::CharacterSelectionPlugin;
-pub use game_ui::{GameUIPlugin, PlayerStats};
+pub use game_ui::{GameUIPlugin, PlayerStats, PauseMenuState, SettingsMenuState, CustomColorButton};
 pub use npc_dialog::NpcDialogPlugin;
 pub use pause::PausePlugin;
 pub use settings::SettingsPlugin;
@@ -26,7 +26,7 @@ pub const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.75, 0.35);
 pub fn button_system(
     mut interaction_query: Query<
         (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<Button>),
+        (Changed<Interaction>, With<Button>, Without<game_ui::CustomColorButton>),
     >,
 ) {
     for (interaction, mut color) in interaction_query.iter_mut() {

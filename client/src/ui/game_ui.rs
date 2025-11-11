@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use crate::GameState;
 use crate::GameFont;
 use super::{button_system, UILayerStack, UILayerType};
@@ -9,7 +10,15 @@ impl Plugin for GameUIPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerStats>()
             .init_resource::<DevModeState>()
-            .add_systems(OnEnter(GameState::InGame), (setup_game_ui, setup_dev_panel))
+            .init_resource::<PauseMenuState>()
+            .init_resource::<SettingsMenuState>()
+            .add_systems(OnEnter(GameState::InGame), (
+                setup_game_ui, 
+                setup_dev_panel, 
+                setup_fps_counter, 
+                setup_pause_menu_overlay,
+                setup_settings_menu_overlay,
+            ))
             .add_systems(OnExit(GameState::InGame), cleanup_game_ui)
             .add_systems(Update, (
                 update_instructions,
@@ -21,6 +30,12 @@ impl Plugin for GameUIPlugin {
                 handle_dev_panel_buttons,
                 update_dev_panel_visibility,
                 update_dev_panel_text,
+                update_fps_counter,
+                handle_pause_menu_toggle,
+                update_pause_menu_visibility,
+                handle_pause_menu_buttons,
+                update_settings_menu_visibility,
+                handle_settings_menu_buttons,
                 button_system,
             ).run_if(in_state(GameState::InGame)));
     }
@@ -106,8 +121,38 @@ impl Default for DevModeState {
     }
 }
 
+/// Resource to track pause menu state (visible/hidden, no state change!)
+#[derive(Resource)]
+pub struct PauseMenuState {
+    pub visible: bool,
+}
+
+impl Default for PauseMenuState {
+    fn default() -> Self {
+        Self { visible: false }
+    }
+}
+
+/// Resource to track settings menu state (visible/hidden, no state change!)
+#[derive(Resource)]
+pub struct SettingsMenuState {
+    pub visible: bool,
+}
+
+impl Default for SettingsMenuState {
+    fn default() -> Self {
+        Self { visible: false }
+    }
+}
+
 #[derive(Component)]
 struct DevPanel;
+
+#[derive(Component)]
+struct PauseMenuOverlay;
+
+#[derive(Component)]
+struct SettingsMenuOverlay;
 
 #[derive(Component)]
 struct DevLevelText;
@@ -120,6 +165,40 @@ enum DevButton {
     ResetLevel,
     TeleportToSpawn, // NEU: Teleport zu (0, 1, 0)
 }
+
+// Marker component to prevent button_system from overriding dev button colors
+#[derive(Component)]
+pub struct CustomColorButton;
+
+#[derive(Component)]
+enum PauseMenuButton {
+    Resume,
+    Settings,
+    MainMenu,
+    Logout,
+    QuitGame,
+}
+
+#[derive(Component)]
+enum SettingsMenuButton {
+    ToggleVsync,
+    ToggleFullscreen,
+    IncreaseMasterVolume,
+    DecreaseMasterVolume,
+    Back,
+}
+
+#[derive(Component)]
+struct VsyncDisplay;
+
+#[derive(Component)]
+struct FullscreenDisplay;
+
+#[derive(Component)]
+struct MasterVolumeDisplay;
+
+#[derive(Component)]
+struct FpsCounter;
 
 fn setup_game_ui(mut commands: Commands, font: Res<GameFont>, mut ui_stack: ResMut<UILayerStack>) {
     // Register base game UI layer
@@ -711,6 +790,7 @@ fn setup_dev_panel(
                     ..default()
                 },
                 DevButton::TeleportToSpawn,
+                CustomColorButton, // Mark as custom color button
             ))
             .with_children(|parent| {
                 parent.spawn(TextBundle::from_section(
@@ -758,6 +838,7 @@ fn create_dev_button_compact(
             ..default()
         },
         button_type,
+        CustomColorButton, // Mark as custom color button
     ))
     .with_children(|parent| {
         parent.spawn(TextBundle::from_section(
@@ -907,5 +988,780 @@ fn cleanup_game_ui(
     
     for entity in query.iter() {
         commands.entity(entity).despawn_recursive();
+    }
+}
+
+// ============================================================================
+// FPS COUNTER
+// ============================================================================
+
+/// Setup FPS counter in top-left corner
+fn setup_fps_counter(
+    mut commands: Commands,
+    font: Res<GameFont>,
+) {
+    let font_handle = font.0.clone();
+    
+    commands.spawn((
+        NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                top: Val::Px(10.0),
+                left: Val::Px(10.0),
+                padding: UiRect {
+                    left: Val::Px(8.0),
+                    right: Val::Px(8.0),
+                    top: Val::Px(4.0),
+                    bottom: Val::Px(4.0),
+                },
+                ..default()
+            },
+            background_color: Color::srgba(0.0, 0.0, 0.0, 0.7).into(),
+            z_index: ZIndex::Global(200), // Above everything
+            border_radius: BorderRadius::all(Val::Px(4.0)),
+            ..default()
+        },
+        GameUI,
+        FpsCounter,
+    ))
+    .with_children(|parent| {
+        parent.spawn(TextBundle::from_section(
+            "FPS: --",
+            TextStyle {
+                font: font_handle,
+                font_size: 20.0,
+                color: Color::srgb(0.3, 1.0, 0.3), // Green
+                ..default()
+            },
+        ));
+    });
+}
+
+/// Update FPS counter text and color based on current FPS
+fn update_fps_counter(
+    diagnostics: Res<DiagnosticsStore>,
+    fps_query: Query<&Children, With<FpsCounter>>,
+    mut text_query: Query<&mut Text>,
+) {
+    // Get FPS from diagnostics
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed())
+        .unwrap_or(0.0);
+    
+    // Update text and color
+    for children in fps_query.iter() {
+        for &child in children.iter() {
+            if let Ok(mut text) = text_query.get_mut(child) {
+                text.sections[0].value = format!("FPS: {:.0}", fps);
+                
+                // Color based on FPS: Green (>60), Yellow (45-60), Orange (30-45), Red (<30)
+                text.sections[0].style.color = if fps >= 60.0 {
+                    Color::srgb(0.3, 1.0, 0.3) // Green
+                } else if fps >= 45.0 {
+                    Color::srgb(1.0, 1.0, 0.3) // Yellow
+                } else if fps >= 30.0 {
+                    Color::srgb(1.0, 0.7, 0.2) // Orange
+                } else {
+                    Color::srgb(1.0, 0.3, 0.3) // Red
+                };
+            }
+        }
+    }
+}
+
+// ============================================================================
+// PAUSE MENU OVERLAY (like Dev Panel - no state change!)
+// ============================================================================
+
+/// Setup pause menu overlay (hidden by default, toggled with ESC)
+fn setup_pause_menu_overlay(
+    mut commands: Commands,
+    font: Res<GameFont>,
+    pause_state: Res<PauseMenuState>,
+) {
+    let font_handle = font.0.clone();
+    
+    commands.spawn((
+        NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: if pause_state.visible { Display::Flex } else { Display::None },
+                ..default()
+            },
+            ..default()
+        },
+        PauseMenuOverlay,
+        GameUI,
+    ))
+    .with_children(|parent| {
+        // Inner floating window (pause menu box)
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Px(400.0),
+                padding: UiRect::all(Val::Px(30.0)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(3.0)),
+                row_gap: Val::Px(15.0),
+                ..default()
+            },
+            background_color: Color::srgba(0.08, 0.08, 0.12, 0.92).into(),
+            border_color: Color::srgba(0.5, 0.7, 1.0, 0.8).into(),
+            ..default()
+        })
+        .with_children(|parent| {
+            // Title
+            parent.spawn(TextBundle::from_section(
+                "PAUSE",
+                TextStyle {
+                    font: font_handle.clone(),
+                    font_size: 48.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+            
+            // Hint text
+            parent.spawn(TextBundle::from_section(
+                "ESC = Resume",
+                TextStyle {
+                    font: font_handle.clone(),
+                    font_size: 16.0,
+                    color: Color::srgb(0.7, 0.7, 0.7),
+                    ..default()
+                },
+            ).with_style(Style {
+                margin: UiRect::bottom(Val::Px(10.0)),
+                ..default()
+            }));
+            
+            // Resume button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.2, 0.6, 0.2).into(),
+                    ..default()
+                },
+                PauseMenuButton::Resume,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "Weiterspielen",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 24.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+            
+            // Settings button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.3, 0.3, 0.4).into(),
+                    ..default()
+                },
+                PauseMenuButton::Settings,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "Einstellungen",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 24.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+            
+            // Logout button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.3, 0.3, 0.4).into(),
+                    ..default()
+                },
+                PauseMenuButton::Logout,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "Ausloggen",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 24.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+            
+            // Quit Game button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.6, 0.1, 0.1).into(),
+                    ..default()
+                },
+                PauseMenuButton::QuitGame,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "Spiel beenden",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 24.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+        });
+    });
+}
+
+/// Toggle pause menu with ESC key (like F3 for dev panel)
+fn handle_pause_menu_toggle(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut pause_state: ResMut<PauseMenuState>,
+) {
+    if keyboard.just_pressed(KeyCode::Escape) {
+        pause_state.visible = !pause_state.visible;
+        if pause_state.visible {
+            info!("⏸️  Pause menu opened (ESC to close)");
+        } else {
+            info!("▶️  Pause menu closed");
+        }
+    }
+}
+
+/// Update pause menu visibility based on state
+fn update_pause_menu_visibility(
+    pause_state: Res<PauseMenuState>,
+    mut menu_query: Query<&mut Style, With<PauseMenuOverlay>>,
+) {
+    if let Ok(mut style) = menu_query.get_single_mut() {
+        style.display = if pause_state.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+/// Handle pause menu button clicks
+fn handle_pause_menu_buttons(
+    mut interaction_query: Query<(&Interaction, &PauseMenuButton), Changed<Interaction>>,
+    mut next_state: ResMut<NextState<GameState>>,
+    mut auth_state: ResMut<crate::auth_state::AuthState>,
+    mut pause_state: ResMut<PauseMenuState>,
+    mut settings_state: ResMut<SettingsMenuState>,
+    mut exit: EventWriter<bevy::app::AppExit>,
+) {
+    for (interaction, button) in interaction_query.iter() {
+        if *interaction == Interaction::Pressed {
+            match button {
+                PauseMenuButton::Resume => {
+                    pause_state.visible = false;
+                    info!("▶️  Resuming game");
+                }
+                PauseMenuButton::Settings => {
+                    pause_state.visible = false;
+                    settings_state.visible = true; // Show settings overlay instead of state change!
+                    info!("⚙️  Opening settings overlay");
+                }
+                PauseMenuButton::MainMenu => {
+                    pause_state.visible = false;
+                    next_state.set(GameState::CharacterSelection);
+                    info!("🏠 Returning to character selection");
+                }
+                PauseMenuButton::Logout => {
+                    pause_state.visible = false;
+                    auth_state.logout();
+                    next_state.set(GameState::Login);
+                    info!("🚪 Logging out");
+                }
+                PauseMenuButton::QuitGame => {
+                    exit.send(bevy::app::AppExit::Success);
+                    info!("👋 Quitting game");
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// SETTINGS MENU OVERLAY (like Pause Menu - no state change!)
+// ============================================================================
+
+/// Setup settings menu overlay (hidden by default, opened from pause menu)
+fn setup_settings_menu_overlay(
+    mut commands: Commands,
+    font: Res<GameFont>,
+    settings_state: Res<SettingsMenuState>,
+    mmo_settings: Res<shared::MMOSettings>,
+) {
+    let font_handle = font.0.clone();
+    
+    commands.spawn((
+        NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: if settings_state.visible { Display::Flex } else { Display::None },
+                ..default()
+            },
+            ..default()
+        },
+        SettingsMenuOverlay,
+        GameUI,
+    ))
+    .with_children(|parent| {
+        // Inner floating window (settings menu box)
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Px(500.0),
+                padding: UiRect::all(Val::Px(30.0)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(3.0)),
+                row_gap: Val::Px(15.0),
+                ..default()
+            },
+            background_color: Color::srgba(0.08, 0.08, 0.12, 0.92).into(),
+            border_color: Color::srgba(0.5, 0.7, 1.0, 0.8).into(),
+            ..default()
+        })
+        .with_children(|parent| {
+            // Title
+            parent.spawn(TextBundle::from_section(
+                "EINSTELLUNGEN",
+                TextStyle {
+                    font: font_handle.clone(),
+                    font_size: 42.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+            
+            // Settings section
+            parent.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(12.0),
+                    width: Val::Percent(100.0),
+                    padding: UiRect::all(Val::Px(15.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                background_color: Color::srgba(0.12, 0.12, 0.16, 0.7).into(),
+                border_color: Color::srgba(0.3, 0.3, 0.4, 0.5).into(),
+                ..default()
+            })
+            .with_children(|parent| {
+                // VSync Setting
+                create_setting_row(
+                    parent,
+                    "V-Sync",
+                    if mmo_settings.graphics.vsync { "AN" } else { "AUS" },
+                    SettingsMenuButton::ToggleVsync,
+                    font_handle.clone(),
+                    true,
+                );
+                
+                // Fullscreen Setting
+                create_setting_row(
+                    parent,
+                    "Vollbild",
+                    if mmo_settings.graphics.fullscreen { "AN" } else { "AUS" },
+                    SettingsMenuButton::ToggleFullscreen,
+                    font_handle.clone(),
+                    true,
+                );
+                
+                // Master Volume Setting
+                create_volume_row(
+                    parent,
+                    "Master Lautstärke",
+                    mmo_settings.audio.master_volume,
+                    SettingsMenuButton::DecreaseMasterVolume,
+                    SettingsMenuButton::IncreaseMasterVolume,
+                    font_handle.clone(),
+                );
+            });
+            
+            // Back button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(10.0)),
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.3, 0.3, 0.4).into(),
+                    ..default()
+                },
+                SettingsMenuButton::Back,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "Zurück",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 24.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+        });
+    });
+}
+
+fn create_setting_row(
+    parent: &mut ChildBuilder,
+    label: &str,
+    value: &str,
+    button: SettingsMenuButton,
+    font: Handle<Font>,
+    is_toggle: bool,
+) {
+    parent.spawn(NodeBundle {
+        style: Style {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            width: Val::Percent(100.0),
+            ..default()
+        },
+        ..default()
+    })
+    .with_children(|row| {
+        // Label
+        row.spawn(TextBundle::from_section(
+            label,
+            TextStyle {
+                font: font.clone(),
+                font_size: 20.0,
+                color: Color::srgb(0.9, 0.9, 0.9),
+                ..default()
+            },
+        ));
+        
+        // Value + Button
+        row.spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(10.0),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            // Value display - spawn with appropriate component based on button type
+            match button {
+                SettingsMenuButton::ToggleVsync => {
+                    row.spawn((
+                        TextBundle::from_section(
+                            value,
+                            TextStyle {
+                                font: font.clone(),
+                                font_size: 18.0,
+                                color: Color::srgb(0.3, 0.8, 0.3),
+                                ..default()
+                            },
+                        ),
+                        VsyncDisplay,
+                    ));
+                }
+                SettingsMenuButton::ToggleFullscreen => {
+                    row.spawn((
+                        TextBundle::from_section(
+                            value,
+                            TextStyle {
+                                font: font.clone(),
+                                font_size: 18.0,
+                                color: Color::srgb(0.3, 0.8, 0.3),
+                                ..default()
+                            },
+                        ),
+                        FullscreenDisplay,
+                    ));
+                }
+                _ => {
+                    row.spawn(TextBundle::from_section(
+                        value,
+                        TextStyle {
+                            font: font.clone(),
+                            font_size: 18.0,
+                            color: Color::srgb(0.3, 0.8, 0.3),
+                            ..default()
+                        },
+                    ));
+                }
+            }
+            
+            // Toggle button
+            if is_toggle {
+                row.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Px(80.0),
+                            height: Val::Px(30.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        background_color: Color::srgb(0.3, 0.5, 0.7).into(),
+                        ..default()
+                    },
+                    button,
+                ))
+                .with_children(|btn| {
+                    btn.spawn(TextBundle::from_section(
+                        "Toggle",
+                        TextStyle {
+                            font: font.clone(),
+                            font_size: 14.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
+            }
+        });
+    });
+}
+
+fn create_volume_row(
+    parent: &mut ChildBuilder,
+    label: &str,
+    volume: f32,
+    decrease_button: SettingsMenuButton,
+    increase_button: SettingsMenuButton,
+    font: Handle<Font>,
+) {
+    parent.spawn(NodeBundle {
+        style: Style {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            width: Val::Percent(100.0),
+            ..default()
+        },
+        ..default()
+    })
+    .with_children(|row| {
+        // Label
+        row.spawn(TextBundle::from_section(
+            label,
+            TextStyle {
+                font: font.clone(),
+                font_size: 20.0,
+                color: Color::srgb(0.9, 0.9, 0.9),
+                ..default()
+            },
+        ));
+        
+        // Volume controls
+        row.spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(10.0),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            // Decrease button
+            row.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Px(35.0),
+                        height: Val::Px(30.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.5, 0.3, 0.3).into(),
+                    ..default()
+                },
+                decrease_button,
+            ))
+            .with_children(|btn| {
+                btn.spawn(TextBundle::from_section(
+                    "-",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 20.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+            
+            // Volume display
+            row.spawn((
+                TextBundle::from_section(
+                    format!("{}%", (volume * 100.0) as i32),
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 18.0,
+                        color: Color::srgb(0.3, 0.8, 0.3),
+                        ..default()
+                    },
+                ),
+                MasterVolumeDisplay,
+            ));
+            
+            // Increase button
+            row.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Px(35.0),
+                        height: Val::Px(30.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.3, 0.5, 0.3).into(),
+                    ..default()
+                },
+                increase_button,
+            ))
+            .with_children(|btn| {
+                btn.spawn(TextBundle::from_section(
+                    "+",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 20.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+        });
+    });
+}
+
+/// Update settings menu visibility based on state
+fn update_settings_menu_visibility(
+    settings_state: Res<SettingsMenuState>,
+    mut menu_query: Query<&mut Style, With<SettingsMenuOverlay>>,
+) {
+    if let Ok(mut style) = menu_query.get_single_mut() {
+        style.display = if settings_state.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+/// Handle settings menu button clicks
+fn handle_settings_menu_buttons(
+    mut interaction_query: Query<(&Interaction, &SettingsMenuButton), Changed<Interaction>>,
+    mut settings_state: ResMut<SettingsMenuState>,
+    mut pause_state: ResMut<PauseMenuState>,
+    mut mmo_settings: ResMut<shared::MMOSettings>,
+    mut vsync_query: Query<&mut Text, (With<VsyncDisplay>, Without<FullscreenDisplay>, Without<MasterVolumeDisplay>)>,
+    mut fullscreen_query: Query<&mut Text, (With<FullscreenDisplay>, Without<VsyncDisplay>, Without<MasterVolumeDisplay>)>,
+    mut volume_query: Query<&mut Text, (With<MasterVolumeDisplay>, Without<VsyncDisplay>, Without<FullscreenDisplay>)>,
+    mut window_query: Query<&mut bevy::window::Window, With<bevy::window::PrimaryWindow>>,
+) {
+    for (interaction, button) in interaction_query.iter() {
+        if *interaction == Interaction::Pressed {
+            match button {
+                SettingsMenuButton::ToggleVsync => {
+                    mmo_settings.graphics.vsync = !mmo_settings.graphics.vsync;
+                    info!("V-Sync toggled: {}", mmo_settings.graphics.vsync);
+                    
+                    // Update display
+                    if let Ok(mut text) = vsync_query.get_single_mut() {
+                        text.sections[0].value = if mmo_settings.graphics.vsync { "AN".to_string() } else { "AUS".to_string() };
+                    }
+                }
+                SettingsMenuButton::ToggleFullscreen => {
+                    mmo_settings.graphics.fullscreen = !mmo_settings.graphics.fullscreen;
+                    info!("Fullscreen toggled: {}", mmo_settings.graphics.fullscreen);
+                    
+                    // Apply fullscreen change
+                    if let Ok(mut window) = window_query.get_single_mut() {
+                        window.mode = if mmo_settings.graphics.fullscreen {
+                            bevy::window::WindowMode::BorderlessFullscreen
+                        } else {
+                            bevy::window::WindowMode::Windowed
+                        };
+                    }
+                    
+                    // Update display
+                    if let Ok(mut text) = fullscreen_query.get_single_mut() {
+                        text.sections[0].value = if mmo_settings.graphics.fullscreen { "AN".to_string() } else { "AUS".to_string() };
+                    }
+                }
+                SettingsMenuButton::IncreaseMasterVolume => {
+                    mmo_settings.audio.master_volume = (mmo_settings.audio.master_volume + 0.1).min(1.0);
+                    info!("Master volume: {:.0}%", mmo_settings.audio.master_volume * 100.0);
+                    
+                    // Update display
+                    if let Ok(mut text) = volume_query.get_single_mut() {
+                        text.sections[0].value = format!("{}%", (mmo_settings.audio.master_volume * 100.0) as i32);
+                    }
+                }
+                SettingsMenuButton::DecreaseMasterVolume => {
+                    mmo_settings.audio.master_volume = (mmo_settings.audio.master_volume - 0.1).max(0.0);
+                    info!("Master volume: {:.0}%", mmo_settings.audio.master_volume * 100.0);
+                    
+                    // Update display
+                    if let Ok(mut text) = volume_query.get_single_mut() {
+                        text.sections[0].value = format!("{}%", (mmo_settings.audio.master_volume * 100.0) as i32);
+                    }
+                }
+                SettingsMenuButton::Back => {
+                    settings_state.visible = false;
+                    pause_state.visible = true; // Return to pause menu
+                    info!("⬅️  Back to pause menu");
+                }
+            }
+        }
     }
 }

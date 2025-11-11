@@ -9,6 +9,18 @@ use std::time::{Instant, Duration};
 use auth::SessionManager;
 use shared::bevy::prelude::Vec3;
 
+// Game Time System
+// 15 minute real-time = 24 hour game-time → 96x speed
+// 1 real second = 96 game seconds = 1.6 game minutes
+// Time is sent ONCE on login, then calculated locally on client
+const TIME_SPEED_MULTIPLIER: f32 = 96.0;
+
+#[derive(Debug, Clone)]
+struct GameTime {
+    hour: f32,              // 0.0 - 24.0 (12.0 = noon, 0.0 = midnight)
+    start_time: Instant,    // Real-world time when server started
+}
+
 // Server-side player state with position tracking
 #[derive(Debug, Clone)]
 struct PlayerState {
@@ -28,6 +40,7 @@ struct GameServer {
     last_update: Instant,
     last_batch_save: Instant,
     save_interval: Duration,  // How often to auto-save (5 minutes)
+    game_time: GameTime,
 }
 
 impl GameServer {
@@ -42,14 +55,19 @@ impl GameServer {
         socket.set_nonblocking(true)?;
         log::info!("Server started on {}", SERVER_ADDR);
 
+        let now = Instant::now();
         Ok(Self {
             socket,
             db_pool,
             session_manager: SessionManager::new(),
             players: HashMap::new(),
-            last_update: Instant::now(),
-            last_batch_save: Instant::now(),
+            last_update: now,
+            last_batch_save: now,
             save_interval: Duration::from_secs(5 * 60), // 5 minutes
+            game_time: GameTime {
+                hour: 12.0,      // Start at noon (12:00)
+                start_time: now,
+            },
         })
     }
 
@@ -62,6 +80,9 @@ impl GameServer {
                 self.handle_client_message(src, client_msg).await;
             }
         }
+
+        // Update game time (but don't broadcast - clients calculate locally)
+        self.update_game_time();
 
         // Cleanup expired sessions periodically
         if self.last_update.elapsed().as_secs() > 60 {
@@ -153,7 +174,19 @@ impl GameServer {
             }
         };
 
+        // Check if login was successful BEFORE sending response
+        let is_login_success = matches!(response, shared::AuthResponse::LoginSuccess { .. });
+        
+        // Send auth response
         self.send_response(client_addr, ServerMessage::AuthResponse(response));
+        
+        // If login successful, immediately send current game time (once!)
+        if is_login_success {
+            log::info!("Login successful - sending initial time sync: {:02.1}:00", self.game_time.hour);
+            self.send_response(client_addr, ServerMessage::TimeUpdate {
+                hour: self.game_time.hour,
+            });
+        }
     }
 
     async fn handle_create_character(&mut self, client_addr: SocketAddr, token: String, character: shared::CharacterData) {
@@ -543,6 +576,31 @@ impl GameServer {
                     log::error!("Error saving position on disconnect: {}", e);
                 }
             }
+        }
+    }
+
+    /// Update game time based on elapsed real time
+    fn update_game_time(&mut self) {
+        let elapsed_real_seconds = self.game_time.start_time.elapsed().as_secs_f32();
+        let elapsed_game_seconds = elapsed_real_seconds * TIME_SPEED_MULTIPLIER;
+        let elapsed_game_hours = elapsed_game_seconds / 3600.0;
+        
+        // Start at 12.0 (noon) and add elapsed hours
+        let total_hours = 12.0 + elapsed_game_hours;
+        
+        // Wrap around at 24 hours (modulo 24)
+        self.game_time.hour = total_hours % 24.0;
+    }
+
+    /// Send initial time to a specific client (called once after login)
+    /// No longer broadcasts to all players - clients calculate time locally
+    fn send_initial_time(&self, client_addr: SocketAddr) {
+        let message = ServerMessage::TimeUpdate {
+            hour: self.game_time.hour,
+        };
+        
+        if let Ok(data) = bincode::serialize(&message) {
+            let _ = self.socket.send_to(&data, client_addr);
         }
     }
 

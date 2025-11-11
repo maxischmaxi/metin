@@ -452,6 +452,9 @@ pub enum ServerMessage {
     // Specialization
     SpecializationChosen { specialization: Specialization },
     SpecializationFailed { reason: String },
+    
+    // Time of Day System
+    TimeUpdate { hour: f32 },  // 0.0 - 24.0 (12.0 = noon, 0.0 = midnight)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

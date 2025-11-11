@@ -35,6 +35,8 @@ fn setup_pause(mut commands: Commands, font: Res<GameFont>, mut ui_stack: ResMut
     ui_stack.push_layer(UILayerType::PauseMenu);
     
     let font_handle = font.0.clone();
+    
+    // Outer fullscreen container (FULLY TRANSPARENT - game is visible!)
     commands.spawn((
         NodeBundle {
             style: Style {
@@ -42,186 +44,203 @@ fn setup_pause(mut commands: Commands, font: Res<GameFont>, mut ui_stack: ResMut
                 height: Val::Percent(100.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                flex_direction: FlexDirection::Column,
+                position_type: PositionType::Absolute,
                 ..default()
             },
-            background_color: Color::srgba(0.1, 0.1, 0.15, 0.95).into(),
+            background_color: Color::NONE.into(), // Completely transparent - no overlay!
             ..default()
         },
         PauseUI,
     ))
     .with_children(|parent| {
-        // Title
-        parent.spawn(TextBundle::from_section(
-            "Pause",
-            TextStyle {
-                font: font_handle.clone(),
-                font_size: 70.0,
-                color: Color::WHITE,
-                ..default()
-            },
-        ).with_style(Style {
-            margin: UiRect::all(Val::Px(30.0)),
-            ..default()
-        }));
-
-        // Hint text
-        parent.spawn(TextBundle::from_section(
-            "Drücke ESC um fortzufahren",
-            TextStyle {
-                font: font_handle.clone(),
-                font_size: 22.0,
-                color: Color::srgb(0.6, 0.6, 0.6),
-                ..default()
-            },
-        ).with_style(Style {
-            margin: UiRect::bottom(Val::Px(50.0)),
-            ..default()
-        }));
-
-        // Buttons in column layout
+        // Inner floating window (pause menu box)
         parent.spawn(NodeBundle {
             style: Style {
+                width: Val::Px(520.0),
+                padding: UiRect::all(Val::Px(40.0)),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(15.0),
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(3.0)),
                 ..default()
             },
+            background_color: Color::srgba(0.08, 0.08, 0.12, 0.90).into(), // Higher opacity for readability
+            border_color: Color::srgba(0.5, 0.7, 1.0, 0.8).into(), // Brighter border for visibility
             ..default()
         })
         .with_children(|parent| {
-            // Resume button
-            parent.spawn((
-                ButtonBundle {
-                    style: Style {
-                        width: Val::Px(400.0),
-                        height: Val::Px(70.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    background_color: Color::srgb(0.2, 0.6, 0.2).into(),
+            // Title
+            parent.spawn(TextBundle::from_section(
+                "Pause",
+                TextStyle {
+                    font: font_handle.clone(),
+                    font_size: 60.0,
+                    color: Color::WHITE,
                     ..default()
                 },
-                PauseButton::Resume,
-            ))
-            .with_children(|parent| {
-                parent.spawn(TextBundle::from_section(
-                    "Weiterspielen",
-                    TextStyle {
-                font: font_handle.clone(),
-                        font_size: 32.0,
-                        color: Color::WHITE,
-                        ..default()
-                    },
-                ));
-            });
+            ).with_style(Style {
+                margin: UiRect::bottom(Val::Px(10.0)),
+                ..default()
+            }));
 
-            // Settings button
-            parent.spawn((
-                ButtonBundle {
-                    style: Style {
-                        width: Val::Px(400.0),
-                        height: Val::Px(70.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    background_color: NORMAL_BUTTON.into(),
+            // Hint text
+            parent.spawn(TextBundle::from_section(
+                "Drücke ESC um fortzufahren",
+                TextStyle {
+                    font: font_handle.clone(),
+                    font_size: 20.0,
+                    color: Color::srgb(0.7, 0.7, 0.7),
                     ..default()
                 },
-                PauseButton::Settings,
-            ))
-            .with_children(|parent| {
-                parent.spawn(TextBundle::from_section(
-                    "Einstellungen",
-                    TextStyle {
-                font: font_handle.clone(),
-                        font_size: 32.0,
-                        color: Color::WHITE,
-                        ..default()
-                    },
-                ));
-            });
+            ).with_style(Style {
+                margin: UiRect::bottom(Val::Px(30.0)),
+                ..default()
+            }));
 
-            // Main Menu button
-            parent.spawn((
-                ButtonBundle {
-                    style: Style {
-                        width: Val::Px(400.0),
-                        height: Val::Px(70.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    background_color: NORMAL_BUTTON.into(),
+            // Buttons in column layout
+            parent.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(12.0),
+                    width: Val::Percent(100.0),
                     ..default()
                 },
-                PauseButton::MainMenu,
-            ))
+                ..default()
+            })
             .with_children(|parent| {
-                parent.spawn(TextBundle::from_section(
-                    "Zum Hauptmenü",
-                    TextStyle {
-                font: font_handle.clone(),
-                        font_size: 32.0,
-                        color: Color::WHITE,
+                // Resume button
+                parent.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(60.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        background_color: Color::srgb(0.2, 0.6, 0.2).into(),
                         ..default()
                     },
-                ));
-            });
+                    PauseButton::Resume,
+                ))
+                .with_children(|parent| {
+                    parent.spawn(TextBundle::from_section(
+                        "Weiterspielen",
+                        TextStyle {
+                    font: font_handle.clone(),
+                            font_size: 28.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
 
-            // Logout button
-            parent.spawn((
-                ButtonBundle {
-                    style: Style {
-                        width: Val::Px(400.0),
-                        height: Val::Px(70.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
+                // Settings button
+                parent.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(60.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        background_color: NORMAL_BUTTON.into(),
                         ..default()
                     },
-                    background_color: NORMAL_BUTTON.into(),
-                    ..default()
-                },
-                PauseButton::Logout,
-            ))
-            .with_children(|parent| {
-                parent.spawn(TextBundle::from_section(
-                    "Ausloggen",
-                    TextStyle {
-                font: font_handle.clone(),
-                        font_size: 32.0,
-                        color: Color::WHITE,
-                        ..default()
-                    },
-                ));
-            });
+                    PauseButton::Settings,
+                ))
+                .with_children(|parent| {
+                    parent.spawn(TextBundle::from_section(
+                        "Einstellungen",
+                        TextStyle {
+                    font: font_handle.clone(),
+                            font_size: 28.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
 
-            // Quit Game button
-            parent.spawn((
-                ButtonBundle {
-                    style: Style {
-                        width: Val::Px(400.0),
-                        height: Val::Px(70.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
+                // Main Menu button
+                parent.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(60.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        background_color: NORMAL_BUTTON.into(),
                         ..default()
                     },
-                    background_color: Color::srgb(0.5, 0.1, 0.1).into(),
-                    ..default()
-                },
-                PauseButton::QuitGame,
-            ))
-            .with_children(|parent| {
-                parent.spawn(TextBundle::from_section(
-                    "Spiel beenden",
-                    TextStyle {
-                font: font_handle.clone(),
-                        font_size: 32.0,
-                        color: Color::WHITE,
+                    PauseButton::MainMenu,
+                ))
+                .with_children(|parent| {
+                    parent.spawn(TextBundle::from_section(
+                        "Zum Hauptmenü",
+                        TextStyle {
+                    font: font_handle.clone(),
+                            font_size: 28.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
+
+                // Logout button
+                parent.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(60.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        background_color: NORMAL_BUTTON.into(),
                         ..default()
                     },
-                ));
+                    PauseButton::Logout,
+                ))
+                .with_children(|parent| {
+                    parent.spawn(TextBundle::from_section(
+                        "Ausloggen",
+                        TextStyle {
+                    font: font_handle.clone(),
+                            font_size: 28.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
+
+                // Quit Game button
+                parent.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(60.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        background_color: Color::srgb(0.5, 0.1, 0.1).into(),
+                        ..default()
+                    },
+                    PauseButton::QuitGame,
+                ))
+                .with_children(|parent| {
+                    parent.spawn(TextBundle::from_section(
+                        "Spiel beenden",
+                        TextStyle {
+                    font: font_handle.clone(),
+                            font_size: 28.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
             });
         });
     });

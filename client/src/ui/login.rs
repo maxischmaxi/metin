@@ -1,11 +1,11 @@
 use bevy::prelude::*;
+use bevy::app::AppExit;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use crate::GameState;
 use crate::GameFont;
 use crate::networking::{NetworkClient, send_auth_request, AuthResponseEvent};
 use shared::{AuthMessage, AuthResponse};
-use super::{button_system, NORMAL_BUTTON};
 
 pub struct LoginPlugin;
 
@@ -15,13 +15,14 @@ impl Plugin for LoginPlugin {
             .add_systems(OnEnter(GameState::Login), setup_login)
             .add_systems(OnExit(GameState::Login), cleanup_login)
             .add_systems(Update, (
-                button_system,
                 login_buttons,
                 handle_login_input,
                 update_input_display,
                 update_submit_button_text,
                 update_status_display,
                 handle_auth_response_ui,
+                animate_background_particles,
+                update_input_field_borders,
             ).run_if(in_state(GameState::Login)));
     }
 }
@@ -54,6 +55,7 @@ enum LoginButton {
     FocusUsername,
     FocusPassword,
     FocusEmail,
+    QuitGame,
 }
 
 #[derive(Component)]
@@ -74,7 +76,32 @@ struct StatusDisplay;
 #[derive(Component)]
 struct RegisterFields;
 
-fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font: Res<GameFont>) {
+#[derive(Component)]
+struct UsernameFieldBorder;
+
+#[derive(Component)]
+struct PasswordFieldBorder;
+
+#[derive(Component)]
+struct EmailFieldBorder;
+
+#[derive(Component)]
+struct BackgroundParticle {
+    velocity: Vec2,
+    spawn_time: f32,
+}
+
+// Medieval color palette
+const MEDIEVAL_GOLD: Color = Color::srgb(0.85, 0.65, 0.13);
+const MEDIEVAL_DARK_WOOD: Color = Color::srgb(0.15, 0.10, 0.08);
+const MEDIEVAL_LIGHT_WOOD: Color = Color::srgb(0.25, 0.18, 0.12);
+const MEDIEVAL_PARCHMENT: Color = Color::srgb(0.92, 0.87, 0.75);
+const MEDIEVAL_INK: Color = Color::srgb(0.1, 0.08, 0.05);
+const MEDIEVAL_RED: Color = Color::srgb(0.65, 0.15, 0.15);
+const MEDIEVAL_BORDER_GOLD: Color = Color::srgb(0.75, 0.60, 0.15);
+const MEDIEVAL_ACTIVE_GOLD: Color = Color::srgb(1.0, 0.80, 0.20);
+
+fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font: Res<GameFont>, time: Res<Time>) {
     login_state.username.clear();
     login_state.password.clear();
     login_state.email.clear();
@@ -84,6 +111,7 @@ fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font
 
     let font_handle = font.0.clone();
 
+    // Main container with animated background
     commands.spawn((
         NodeBundle {
             style: Style {
@@ -92,90 +120,130 @@ fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 flex_direction: FlexDirection::Column,
+                position_type: PositionType::Relative,
                 ..default()
             },
-            background_color: Color::srgb(0.1, 0.1, 0.15).into(),
+            background_color: Color::srgb(0.08, 0.06, 0.05).into(), // Dark medieval background
             ..default()
         },
         LoginUI,
     ))
     .with_children(|parent| {
-        // Title
-        parent.spawn(TextBundle::from_section(
-            "Willkommen",
-            TextStyle {
-                font: font_handle.clone(),
-                font_size: 70.0,
-                color: Color::WHITE,
-                ..default()
-            },
-        ).with_style(Style {
-            margin: UiRect::all(Val::Px(20.0)),
-            ..default()
-        }));
-
-        // Username field
-        create_input_field(parent, "Benutzername:", "Benutzername eingeben", UsernameDisplay, LoginButton::FocusUsername, font_handle.clone());
-
-        // Password field
-        create_input_field(parent, "Passwort:", "Passwort eingeben", PasswordDisplay, LoginButton::FocusPassword, font_handle.clone());
-
-        // Email field (for registration)
-        parent.spawn((
-            NodeBundle {
-                style: Style {
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    display: Display::None, // Hidden by default
-                    ..default()
-                },
-                ..default()
-            },
-            RegisterFields,
-        ))
-        .with_children(|parent| {
-            create_input_field(parent, "E-Mail (optional):", "E-Mail eingeben", EmailDisplay, LoginButton::FocusEmail, font_handle.clone());
-        });
-
-        // Status message
-        parent.spawn((
-            TextBundle::from_section(
-                "",
-                TextStyle {
-                    font: font_handle.clone(),
-                    font_size: 20.0,
-                    color: Color::srgb(1.0, 0.3, 0.3),
-                    ..default()
-                },
-            ).with_style(Style {
-                margin: UiRect::all(Val::Px(10.0)),
-                ..default()
-            }),
-            StatusDisplay,
-        ));
-
-        // Buttons
+        // Spawn background particles for atmosphere
+        spawn_background_particles(parent, time.elapsed_seconds());
+        
+        // Main login panel (medieval wood panel)
         parent.spawn(NodeBundle {
             style: Style {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(20.0),
-                margin: UiRect::top(Val::Px(20.0)),
+                width: Val::Px(480.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                padding: UiRect::all(Val::Px(40.0)),
+                border: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
+            background_color: MEDIEVAL_DARK_WOOD.into(),
+            border_color: MEDIEVAL_BORDER_GOLD.into(),
             ..default()
         })
         .with_children(|parent| {
-            // Submit button
+            // Title with medieval shield style
+            parent.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(35.0)),
+                    padding: UiRect::all(Val::Px(15.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                background_color: MEDIEVAL_LIGHT_WOOD.into(),
+                border_color: MEDIEVAL_GOLD.into(),
+                ..default()
+            })
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "⚔ REALM OF LEGENDS ⚔",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 48.0,
+                        color: MEDIEVAL_GOLD,
+                        ..default()
+                    },
+                ));
+                
+                parent.spawn(TextBundle::from_section(
+                    "Enter the Medieval World",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 16.0,
+                        color: MEDIEVAL_PARCHMENT,
+                        ..default()
+                    },
+                ).with_style(Style {
+                    margin: UiRect::top(Val::Px(5.0)),
+                    ..default()
+                }));
+            });
+
+            // Username field
+            create_medieval_input_field(
+                parent,
+                "Username",
+                UsernameDisplay,
+                LoginButton::FocusUsername,
+                UsernameFieldBorder,
+                font_handle.clone(),
+            );
+
+            // Password field
+            create_medieval_input_field(
+                parent,
+                "Password",
+                PasswordDisplay,
+                LoginButton::FocusPassword,
+                PasswordFieldBorder,
+                font_handle.clone(),
+            );
+
+            // Email field (for registration)
+            parent.spawn((
+                NodeBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Column,
+                        display: Display::None, // Hidden by default
+                        ..default()
+                    },
+                    ..default()
+                },
+                RegisterFields,
+            ))
+            .with_children(|parent| {
+                create_medieval_input_field(
+                    parent,
+                    "Email",
+                    EmailDisplay,
+                    LoginButton::FocusEmail,
+                    EmailFieldBorder,
+                    font_handle.clone(),
+                );
+            });
+
+            // Submit button (medieval style)
             parent.spawn((
                 ButtonBundle {
                     style: Style {
-                        width: Val::Px(200.0),
-                        height: Val::Px(65.0),
+                        width: Val::Percent(100.0),
+                        height: Val::Px(55.0),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(25.0)),
+                        border: UiRect::all(Val::Px(3.0)),
                         ..default()
                     },
-                    background_color: Color::srgb(0.2, 0.6, 0.2).into(),
+                    background_color: MEDIEVAL_RED.into(),
+                    border_color: MEDIEVAL_GOLD.into(),
                     ..default()
                 },
                 LoginButton::Submit,
@@ -183,11 +251,11 @@ fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font
             .with_children(|parent| {
                 parent.spawn((
                     TextBundle::from_section(
-                        "Einloggen",
+                        "⚔ ENTER REALM ⚔",
                         TextStyle {
                             font: font_handle.clone(),
-                            font_size: 30.0,
-                            color: Color::WHITE,
+                            font_size: 26.0,
+                            color: MEDIEVAL_GOLD,
                             ..default()
                         },
                     ),
@@ -199,172 +267,355 @@ fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font
             parent.spawn((
                 ButtonBundle {
                     style: Style {
-                        width: Val::Px(250.0),
-                        height: Val::Px(65.0),
+                        width: Val::Percent(100.0),
+                        height: Val::Px(45.0),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(15.0)),
+                        border: UiRect::all(Val::Px(2.0)),
                         ..default()
                     },
-                    background_color: NORMAL_BUTTON.into(),
+                    background_color: MEDIEVAL_LIGHT_WOOD.into(),
+                    border_color: MEDIEVAL_BORDER_GOLD.into(),
                     ..default()
                 },
                 LoginButton::SwitchMode,
             ))
             .with_children(|parent| {
                 parent.spawn(TextBundle::from_section(
-                    "Neuen Account erstellen",
+                    "Create New Account",
                     TextStyle {
                         font: font_handle.clone(),
-                        font_size: 30.0,
-                        color: Color::WHITE,
+                        font_size: 18.0,
+                        color: MEDIEVAL_PARCHMENT,
                         ..default()
                     },
                 ));
             });
-        });
 
-        // Instructions
+            // Quit Game button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        width: Val::Px(300.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(10.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    background_color: MEDIEVAL_RED.into(),
+                    border_color: MEDIEVAL_GOLD.into(),
+                    ..default()
+                },
+                LoginButton::QuitGame,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "Spiel beenden",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 18.0,
+                        color: MEDIEVAL_GOLD,
+                        ..default()
+                    },
+                ));
+            });
+
+            // Status message
+            parent.spawn((
+                TextBundle::from_section(
+                    "",
+                    TextStyle {
+                        font: font_handle.clone(),
+                        font_size: 16.0,
+                        color: MEDIEVAL_RED,
+                        ..default()
+                    },
+                ).with_style(Style {
+                    margin: UiRect::top(Val::Px(15.0)),
+                    ..default()
+                }),
+                StatusDisplay,
+            ));
+        });
+    });
+}
+
+fn create_medieval_input_field(
+    parent: &mut ChildBuilder,
+    label: &str,
+    display_component: impl Component,
+    button_component: LoginButton,
+    border_component: impl Component,
+    font: Handle<Font>,
+) {
+    parent.spawn(NodeBundle {
+        style: Style {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            margin: UiRect::bottom(Val::Px(20.0)),
+            ..default()
+        },
+        ..default()
+    })
+    .with_children(|parent| {
+        // Label
         parent.spawn(TextBundle::from_section(
-            "Tab = Feld wechseln | Enter = Bestätigen",
+            label,
             TextStyle {
-                font: font_handle.clone(),
+                font: font.clone(),
                 font_size: 18.0,
-                color: Color::srgb(0.6, 0.6, 0.6),
+                color: MEDIEVAL_GOLD,
                 ..default()
             },
         ).with_style(Style {
-            margin: UiRect::top(Val::Px(30.0)),
+            margin: UiRect::bottom(Val::Px(8.0)),
             ..default()
         }));
-    });
-}
 
-/// Performs the login/registration submission
-fn perform_login_submit(login_state: &mut LoginState, network: Option<&NetworkClient>) {
-    // Validate input
-    if login_state.username.len() < 3 {
-        login_state.status_message = "Benutzername muss mindestens 3 Zeichen lang sein".to_string();
-        return;
-    }
-    if login_state.password.len() < 8 {
-        login_state.status_message = "Passwort muss mindestens 8 Zeichen lang sein".to_string();
-        return;
-    }
-
-    // Send auth request to server
-    if let Some(network) = network {
-        let auth_msg = if login_state.is_register_mode {
-            AuthMessage::Register {
-                username: login_state.username.clone(),
-                password: login_state.password.clone(),
-                email: if login_state.email.is_empty() {
-                    None
-                } else {
-                    Some(login_state.email.clone())
-                },
-            }
-        } else {
-            AuthMessage::Login {
-                username: login_state.username.clone(),
-                password: login_state.password.clone(),
-            }
-        };
-
-        match send_auth_request(network, auth_msg) {
-            Ok(_) => {
-                info!("{} request sent for user: {}", 
-                    if login_state.is_register_mode { "Register" } else { "Login" },
-                    login_state.username
-                );
-                login_state.status_message = "Verbinde mit Server...".to_string();
-            }
-            Err(e) => {
-                error!("Failed to send auth request: {}", e);
-                login_state.status_message = format!("Netzwerkfehler: {}", e);
-            }
-        }
-    } else {
-        error!("Network client not initialized");
-        login_state.status_message = "Netzwerk nicht verfügbar".to_string();
-    }
-}
-
-fn create_input_field(
-    parent: &mut ChildBuilder,
-    label: &str,
-    placeholder: &str,
-    display_marker: impl Component,
-    button_type: LoginButton,
-    font: Handle<Font>,
-) {
-    parent.spawn(TextBundle::from_section(
-        label,
-        TextStyle {
-            font: font.clone(),
-            font_size: 25.0,
-            color: Color::WHITE,
-            ..default()
-        },
-    ).with_style(Style {
-        margin: UiRect::all(Val::Px(10.0)),
-        ..default()
-    }));
-
-    parent.spawn((
-        ButtonBundle {
-            style: Style {
-                width: Val::Px(400.0),
-                height: Val::Px(60.0),
-                margin: UiRect::all(Val::Px(10.0)),
-                padding: UiRect::all(Val::Px(10.0)),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(3.0)),
-                ..default()
-            },
-            background_color: Color::srgb(0.15, 0.15, 0.2).into(),
-            border_color: Color::srgb(0.4, 0.6, 0.8).into(),
-            ..default()
-        },
-        button_type,
-    ))
-    .with_children(|parent| {
+        // Input field container (clickable)
         parent.spawn((
-            TextBundle::from_section(
-                placeholder,
-                TextStyle {
-                    font: font.clone(),
-                    font_size: 25.0,
-                    color: Color::srgb(0.5, 0.5, 0.5),
+            ButtonBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(50.0),
+                    padding: UiRect::all(Val::Px(12.0)),
+                    align_items: AlignItems::Center,
+                    border: UiRect::all(Val::Px(3.0)),
                     ..default()
                 },
-            ),
-            display_marker,
-        ));
+                background_color: MEDIEVAL_PARCHMENT.into(),
+                border_color: MEDIEVAL_BORDER_GOLD.into(),
+                ..default()
+            },
+            button_component,
+            border_component,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                TextBundle::from_section(
+                    "",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 20.0,
+                        color: MEDIEVAL_INK,
+                        ..default()
+                    },
+                ),
+                display_component,
+            ));
+        });
     });
+}
+
+fn spawn_background_particles(parent: &mut ChildBuilder, current_time: f32) {
+    // Spawn 30 floating particles for atmosphere (deterministic)
+    for i in 0..30 {
+        let x = (i as f32 * 73.5) % 100.0;
+        let y = (i as f32 * 47.3) % 100.0;
+        let speed_x = ((i as f32 * 12.7).sin() * 0.3 + 0.2) * if i % 2 == 0 { 1.0 } else { -1.0 };
+        let speed_y = ((i as f32 * 8.3).cos() * 0.2 + 0.15);
+        let size = 3.0 + ((i as f32 * 5.7).sin() * 1.5);
+        let opacity = 0.2 + ((i as f32 * 7.1).cos() * 0.15);
+        
+        parent.spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(x),
+                    top: Val::Percent(y),
+                    width: Val::Px(size),
+                    height: Val::Px(size),
+                    ..default()
+                },
+                background_color: MEDIEVAL_GOLD.with_alpha(opacity).into(),
+                ..default()
+            },
+            BackgroundParticle {
+                velocity: Vec2::new(speed_x, speed_y),
+                spawn_time: current_time,
+            },
+        ));
+    }
+}
+
+fn animate_background_particles(
+    time: Res<Time>,
+    mut particle_query: Query<(&mut Style, &BackgroundParticle)>,
+) {
+    for (mut style, particle) in particle_query.iter_mut() {
+        // Update position
+        if let Val::Percent(x) = style.left {
+            let new_x = (x + particle.velocity.x * time.delta_seconds() * 10.0) % 100.0;
+            style.left = Val::Percent(if new_x < 0.0 { new_x + 100.0 } else { new_x });
+        }
+        
+        if let Val::Percent(y) = style.top {
+            let new_y = (y + particle.velocity.y * time.delta_seconds() * 10.0) % 100.0;
+            style.top = Val::Percent(if new_y < 0.0 { new_y + 100.0 } else { new_y });
+        }
+    }
+}
+
+fn update_input_field_borders(
+    login_state: Res<LoginState>,
+    mut username_query: Query<&mut BorderColor, (With<UsernameFieldBorder>, Without<PasswordFieldBorder>, Without<EmailFieldBorder>)>,
+    mut password_query: Query<&mut BorderColor, (With<PasswordFieldBorder>, Without<UsernameFieldBorder>, Without<EmailFieldBorder>)>,
+    mut email_query: Query<&mut BorderColor, (With<EmailFieldBorder>, Without<UsernameFieldBorder>, Without<PasswordFieldBorder>)>,
+) {
+    if !login_state.is_changed() {
+        return;
+    }
+    
+    // Update username border
+    if let Ok(mut border) = username_query.get_single_mut() {
+        *border = if login_state.active_field == InputField::Username {
+            MEDIEVAL_ACTIVE_GOLD.into()
+        } else {
+            MEDIEVAL_BORDER_GOLD.into()
+        };
+    }
+    
+    // Update password border
+    if let Ok(mut border) = password_query.get_single_mut() {
+        *border = if login_state.active_field == InputField::Password {
+            MEDIEVAL_ACTIVE_GOLD.into()
+        } else {
+            MEDIEVAL_BORDER_GOLD.into()
+        };
+    }
+    
+    // Update email border
+    if let Ok(mut border) = email_query.get_single_mut() {
+        *border = if login_state.active_field == InputField::Email {
+            MEDIEVAL_ACTIVE_GOLD.into()
+        } else {
+            MEDIEVAL_BORDER_GOLD.into()
+        };
+    }
+}
+
+fn login_buttons(
+    mut interaction_query: Query<(&Interaction, &LoginButton, &mut BackgroundColor, &mut BorderColor), Changed<Interaction>>,
+    mut login_state: ResMut<LoginState>,
+    network: Option<Res<NetworkClient>>,
+    mut register_fields: Query<&mut Style, With<RegisterFields>>,
+    mut exit: EventWriter<AppExit>,
+) {
+    for (interaction, button, mut bg_color, mut border_color) in interaction_query.iter_mut() {
+        // Handle hover effects for medieval buttons
+        match *interaction {
+            Interaction::Pressed => {
+                match button {
+                    LoginButton::Submit => {
+                        *bg_color = Color::srgb(0.75, 0.20, 0.20).into(); // Brighter red
+                        *border_color = MEDIEVAL_ACTIVE_GOLD.into();
+                        
+                        if let Some(network) = network.as_ref() {
+                            let auth_msg = if login_state.is_register_mode {
+                                AuthMessage::Register {
+                                    username: login_state.username.clone(),
+                                    password: login_state.password.clone(),
+                                    email: if login_state.email.is_empty() { 
+                                        None 
+                                    } else { 
+                                        Some(login_state.email.clone()) 
+                                    },
+                                }
+                            } else {
+                                AuthMessage::Login {
+                                    username: login_state.username.clone(),
+                                    password: login_state.password.clone(),
+                                }
+                            };
+
+                            if let Err(e) = send_auth_request(network, auth_msg) {
+                                login_state.status_message = format!("Network error: {}", e);
+                            } else {
+                                login_state.status_message = "Connecting...".to_string();
+                            }
+                        }
+                    }
+                    LoginButton::SwitchMode => {
+                        *bg_color = Color::srgb(0.30, 0.22, 0.16).into(); // Lighter wood
+                        *border_color = MEDIEVAL_ACTIVE_GOLD.into();
+                        
+                        login_state.is_register_mode = !login_state.is_register_mode;
+                        login_state.status_message.clear();
+                        
+                        // Toggle email field visibility
+                        for mut style in register_fields.iter_mut() {
+                            style.display = if login_state.is_register_mode {
+                                Display::Flex
+                            } else {
+                                Display::None
+                            };
+                        }
+                    }
+                    LoginButton::FocusUsername => {
+                        login_state.active_field = InputField::Username;
+                    }
+                    LoginButton::FocusPassword => {
+                        login_state.active_field = InputField::Password;
+                    }
+                    LoginButton::FocusEmail => {
+                        login_state.active_field = InputField::Email;
+                    }
+                    LoginButton::QuitGame => {
+                        *bg_color = Color::srgb(0.75, 0.15, 0.15).into(); // Brighter red
+                        *border_color = MEDIEVAL_ACTIVE_GOLD.into();
+                        exit.send(AppExit::Success);
+                    }
+                }
+            }
+            Interaction::Hovered => {
+                match button {
+                    LoginButton::Submit => {
+                        *bg_color = Color::srgb(0.70, 0.18, 0.18).into(); // Slightly brighter red
+                        *border_color = MEDIEVAL_ACTIVE_GOLD.into();
+                    }
+                    LoginButton::SwitchMode => {
+                        *bg_color = Color::srgb(0.28, 0.20, 0.14).into(); // Slightly lighter wood
+                        *border_color = MEDIEVAL_ACTIVE_GOLD.into();
+                    }
+                    LoginButton::QuitGame => {
+                        *bg_color = Color::srgb(0.70, 0.13, 0.13).into(); // Slightly brighter red
+                        *border_color = MEDIEVAL_ACTIVE_GOLD.into();
+                    }
+                    _ => {}
+                }
+            }
+            Interaction::None => {
+                match button {
+                    LoginButton::Submit => {
+                        *bg_color = MEDIEVAL_RED.into();
+                        *border_color = MEDIEVAL_GOLD.into();
+                    }
+                    LoginButton::SwitchMode => {
+                        *bg_color = MEDIEVAL_LIGHT_WOOD.into();
+                        *border_color = MEDIEVAL_BORDER_GOLD.into();
+                    }
+                    LoginButton::QuitGame => {
+                        *bg_color = MEDIEVAL_RED.into();
+                        *border_color = MEDIEVAL_GOLD.into();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 fn handle_login_input(
     mut login_state: ResMut<LoginState>,
-    mut evr_kbd: EventReader<KeyboardInput>,
+    mut char_events: EventReader<bevy::input::keyboard::KeyboardInput>,
     keys: Res<ButtonInput<KeyCode>>,
-    network: Option<Res<NetworkClient>>,
 ) {
-    for ev in evr_kbd.read() {
-        if ev.state == ButtonState::Pressed {
-            match ev.key_code {
-                KeyCode::Enter => {
-                    // Trigger submit when Enter is pressed
-                    perform_login_submit(&mut login_state, network.as_deref());
-                }
-                KeyCode::Tab => {
-                    login_state.active_field = match login_state.active_field {
-                        InputField::Username => InputField::Password,
-                        InputField::Password if login_state.is_register_mode => InputField::Email,
-                        InputField::Password => InputField::Username,
-                        InputField::Email => InputField::Username,
-                    };
-                }
+    for event in char_events.read() {
+        if event.state == ButtonState::Pressed {
+            match event.key_code {
                 KeyCode::Backspace => {
                     match login_state.active_field {
                         InputField::Username => { login_state.username.pop(); }
@@ -372,65 +623,99 @@ fn handle_login_input(
                         InputField::Email => { login_state.email.pop(); }
                     }
                 }
-                KeyCode::Space => {
-                    let text = match login_state.active_field {
-                        InputField::Username => &mut login_state.username,
-                        InputField::Password => &mut login_state.password,
-                        InputField::Email => &mut login_state.email,
+                KeyCode::Tab => {
+                    login_state.active_field = match login_state.active_field {
+                        InputField::Username => InputField::Password,
+                        InputField::Password => {
+                            if login_state.is_register_mode {
+                                InputField::Email
+                            } else {
+                                InputField::Username
+                            }
+                        }
+                        InputField::Email => InputField::Username,
                     };
-                    if text.len() < 50 {
-                        text.push(' ');
+                }
+                KeyCode::Enter => {
+                    // Submit will be handled by button
+                }
+                _ => {
+                    if let Some(text) = get_text_from_key(event.key_code, keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)) {
+                        match login_state.active_field {
+                            InputField::Username => {
+                                if login_state.username.len() < 20 {
+                                    login_state.username.push_str(&text);
+                                }
+                            }
+                            InputField::Password => {
+                                if login_state.password.len() < 30 {
+                                    login_state.password.push_str(&text);
+                                }
+                            }
+                            InputField::Email => {
+                                if login_state.email.len() < 50 {
+                                    login_state.email.push_str(&text);
+                                }
+                            }
+                        }
                     }
                 }
-                _ => {}
             }
         }
     }
+}
 
-    // Handle character input
-    for key in keys.get_just_pressed() {
-        let text = match login_state.active_field {
-            InputField::Username => &mut login_state.username,
-            InputField::Password => &mut login_state.password,
-            InputField::Email => &mut login_state.email,
-        };
-
-        if text.len() >= 50 {
-            continue;
-        }
-
-        let character = match key {
-            KeyCode::KeyA => Some('a'), KeyCode::KeyB => Some('b'),
-            KeyCode::KeyC => Some('c'), KeyCode::KeyD => Some('d'),
-            KeyCode::KeyE => Some('e'), KeyCode::KeyF => Some('f'),
-            KeyCode::KeyG => Some('g'), KeyCode::KeyH => Some('h'),
-            KeyCode::KeyI => Some('i'), KeyCode::KeyJ => Some('j'),
-            KeyCode::KeyK => Some('k'), KeyCode::KeyL => Some('l'),
-            KeyCode::KeyM => Some('m'), KeyCode::KeyN => Some('n'),
-            KeyCode::KeyO => Some('o'), KeyCode::KeyP => Some('p'),
-            KeyCode::KeyQ => Some('q'), KeyCode::KeyR => Some('r'),
-            KeyCode::KeyS => Some('s'), KeyCode::KeyT => Some('t'),
-            KeyCode::KeyU => Some('u'), KeyCode::KeyV => Some('v'),
-            KeyCode::KeyW => Some('w'), KeyCode::KeyX => Some('x'),
-            KeyCode::KeyY => Some('y'), KeyCode::KeyZ => Some('z'),
-            KeyCode::Digit0 => Some('0'), KeyCode::Digit1 => Some('1'),
-            KeyCode::Digit2 => Some('2'), KeyCode::Digit3 => Some('3'),
-            KeyCode::Digit4 => Some('4'), KeyCode::Digit5 => Some('5'),
-            KeyCode::Digit6 => Some('6'), KeyCode::Digit7 => Some('7'),
-            KeyCode::Digit8 => Some('8'), KeyCode::Digit9 => Some('9'),
-            KeyCode::Minus => Some('-'),
-            KeyCode::Period => Some('.'),
-            KeyCode::NumpadDecimal => Some('.'),
-            _ => None,
-        };
-
-        if let Some(ch) = character {
-            if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
-                text.push(ch.to_ascii_uppercase());
-            } else {
-                text.push(ch);
-            }
-        }
+fn get_text_from_key(key: KeyCode, shift: bool) -> Option<String> {
+    match key {
+        KeyCode::KeyA => Some(if shift { "A" } else { "a" }.to_string()),
+        KeyCode::KeyB => Some(if shift { "B" } else { "b" }.to_string()),
+        KeyCode::KeyC => Some(if shift { "C" } else { "c" }.to_string()),
+        KeyCode::KeyD => Some(if shift { "D" } else { "d" }.to_string()),
+        KeyCode::KeyE => Some(if shift { "E" } else { "e" }.to_string()),
+        KeyCode::KeyF => Some(if shift { "F" } else { "f" }.to_string()),
+        KeyCode::KeyG => Some(if shift { "G" } else { "g" }.to_string()),
+        KeyCode::KeyH => Some(if shift { "H" } else { "h" }.to_string()),
+        KeyCode::KeyI => Some(if shift { "I" } else { "i" }.to_string()),
+        KeyCode::KeyJ => Some(if shift { "J" } else { "j" }.to_string()),
+        KeyCode::KeyK => Some(if shift { "K" } else { "k" }.to_string()),
+        KeyCode::KeyL => Some(if shift { "L" } else { "l" }.to_string()),
+        KeyCode::KeyM => Some(if shift { "M" } else { "m" }.to_string()),
+        KeyCode::KeyN => Some(if shift { "N" } else { "n" }.to_string()),
+        KeyCode::KeyO => Some(if shift { "O" } else { "o" }.to_string()),
+        KeyCode::KeyP => Some(if shift { "P" } else { "p" }.to_string()),
+        KeyCode::KeyQ => Some(if shift { "Q" } else { "q" }.to_string()),
+        KeyCode::KeyR => Some(if shift { "R" } else { "r" }.to_string()),
+        KeyCode::KeyS => Some(if shift { "S" } else { "s" }.to_string()),
+        KeyCode::KeyT => Some(if shift { "T" } else { "t" }.to_string()),
+        KeyCode::KeyU => Some(if shift { "U" } else { "u" }.to_string()),
+        KeyCode::KeyV => Some(if shift { "V" } else { "v" }.to_string()),
+        KeyCode::KeyW => Some(if shift { "W" } else { "w" }.to_string()),
+        KeyCode::KeyX => Some(if shift { "X" } else { "x" }.to_string()),
+        KeyCode::KeyY => Some(if shift { "Y" } else { "y" }.to_string()),
+        KeyCode::KeyZ => Some(if shift { "Z" } else { "z" }.to_string()),
+        KeyCode::Digit0 => Some(if shift { ")" } else { "0" }.to_string()),
+        KeyCode::Digit1 => Some(if shift { "!" } else { "1" }.to_string()),
+        KeyCode::Digit2 => Some(if shift { "@" } else { "2" }.to_string()),
+        KeyCode::Digit3 => Some(if shift { "#" } else { "3" }.to_string()),
+        KeyCode::Digit4 => Some(if shift { "$" } else { "4" }.to_string()),
+        KeyCode::Digit5 => Some(if shift { "%" } else { "5" }.to_string()),
+        KeyCode::Digit6 => Some(if shift { "^" } else { "6" }.to_string()),
+        KeyCode::Digit7 => Some(if shift { "&" } else { "7" }.to_string()),
+        KeyCode::Digit8 => Some(if shift { "*" } else { "8" }.to_string()),
+        KeyCode::Digit9 => Some(if shift { "(" } else { "9" }.to_string()),
+        KeyCode::Period => Some(if shift { ">" } else { "." }.to_string()),
+        KeyCode::Minus => Some(if shift { "_" } else { "-" }.to_string()),
+        KeyCode::Equal => Some(if shift { "+" } else { "=" }.to_string()),
+        KeyCode::Space => Some(" ".to_string()),
+        KeyCode::Semicolon => Some(if shift { ":" } else { ";" }.to_string()),
+        KeyCode::Comma => Some(if shift { "<" } else { "," }.to_string()),
+        KeyCode::Slash => Some(if shift { "?" } else { "/" }.to_string()),
+        KeyCode::Backslash => Some(if shift { "|" } else { "\\" }.to_string()),
+        KeyCode::BracketLeft => Some(if shift { "{" } else { "[" }.to_string()),
+        KeyCode::BracketRight => Some(if shift { "}" } else { "]" }.to_string()),
+        KeyCode::Quote => Some(if shift { "\"" } else { "'" }.to_string()),
+        KeyCode::Backquote => Some(if shift { "~" } else { "`" }.to_string()),
+        _ => None,
     }
 }
 
@@ -439,198 +724,115 @@ fn update_input_display(
     mut username_query: Query<&mut Text, (With<UsernameDisplay>, Without<PasswordDisplay>, Without<EmailDisplay>)>,
     mut password_query: Query<&mut Text, (With<PasswordDisplay>, Without<UsernameDisplay>, Without<EmailDisplay>)>,
     mut email_query: Query<&mut Text, (With<EmailDisplay>, Without<UsernameDisplay>, Without<PasswordDisplay>)>,
-    time: Res<Time>,
 ) {
-    let cursor = if (time.elapsed_seconds() * 2.0) as u32 % 2 == 0 { "_" } else { " " };
+    if !login_state.is_changed() {
+        return;
+    }
 
-    for mut text in username_query.iter_mut() {
-        let is_active = login_state.active_field == InputField::Username;
-        let is_empty = login_state.username.is_empty();
-        
-        text.sections[0].value = if is_empty {
-            if is_active {
-                format!("Benutzername eingeben{}", cursor)
+    // Username display
+    if let Ok(mut text) = username_query.get_single_mut() {
+        let display = if login_state.username.is_empty() {
+            if login_state.active_field == InputField::Username {
+                "|".to_string() // Just cursor when active and empty
             } else {
-                "Benutzername eingeben".to_string()
+                "".to_string() // Nothing when inactive and empty
             }
         } else {
-            if is_active {
-                format!("{}{}", login_state.username, cursor)
+            if login_state.active_field == InputField::Username {
+                format!("{}|", login_state.username)
             } else {
                 login_state.username.clone()
             }
         };
-        
-        text.sections[0].style.color = if is_empty {
-            Color::srgb(0.5, 0.5, 0.5)
-        } else {
-            Color::srgb(1.0, 1.0, 0.4)
-        };
+        text.sections[0].value = display;
     }
 
-    for mut text in password_query.iter_mut() {
-        let is_active = login_state.active_field == InputField::Password;
-        let is_empty = login_state.password.is_empty();
-        let masked = "*".repeat(login_state.password.len());
-        
-        text.sections[0].value = if is_empty {
-            if is_active {
-                format!("Passwort eingeben{}", cursor)
+    // Password display (masked)
+    if let Ok(mut text) = password_query.get_single_mut() {
+        let display = if login_state.password.is_empty() {
+            if login_state.active_field == InputField::Password {
+                "|".to_string()
             } else {
-                "Passwort eingeben".to_string()
+                "".to_string()
             }
         } else {
-            if is_active {
-                format!("{}{}", masked, cursor)
+            let masked = "●".repeat(login_state.password.len());
+            if login_state.active_field == InputField::Password {
+                format!("{}|", masked)
             } else {
                 masked
             }
         };
-        
-        text.sections[0].style.color = if is_empty {
-            Color::srgb(0.5, 0.5, 0.5)
-        } else {
-            Color::srgb(1.0, 1.0, 0.4)
-        };
+        text.sections[0].value = display;
     }
 
-    for mut text in email_query.iter_mut() {
-        let is_active = login_state.active_field == InputField::Email;
-        let is_empty = login_state.email.is_empty();
-        
-        text.sections[0].value = if is_empty {
-            if is_active {
-                format!("E-Mail eingeben{}", cursor)
+    // Email display
+    if let Ok(mut text) = email_query.get_single_mut() {
+        let display = if login_state.email.is_empty() {
+            if login_state.active_field == InputField::Email {
+                "|".to_string()
             } else {
-                "E-Mail eingeben".to_string()
+                "".to_string()
             }
         } else {
-            if is_active {
-                format!("{}{}", login_state.email, cursor)
+            if login_state.active_field == InputField::Email {
+                format!("{}|", login_state.email)
             } else {
                 login_state.email.clone()
             }
         };
-        
-        text.sections[0].style.color = if is_empty {
-            Color::srgb(0.5, 0.5, 0.5)
-        } else {
-            Color::srgb(1.0, 1.0, 0.4)
-        };
-    }
-}
-
-fn login_buttons(
-    mut interaction_query: Query<(&Interaction, &LoginButton, &Children), Changed<Interaction>>,
-    mut login_state: ResMut<LoginState>,
-    mut register_fields_query: Query<&mut Style, With<RegisterFields>>,
-    mut text_query: Query<&mut Text>,
-    network: Option<Res<NetworkClient>>,
-) {
-    for (interaction, button, children) in interaction_query.iter_mut() {
-        if *interaction == Interaction::Pressed {
-            match button {
-                LoginButton::SwitchMode => {
-                    login_state.is_register_mode = !login_state.is_register_mode;
-                    login_state.status_message.clear();
-                    
-                    // Toggle register fields visibility
-                    for mut style in register_fields_query.iter_mut() {
-                        style.display = if login_state.is_register_mode {
-                            Display::Flex
-                        } else {
-                            Display::None
-                        };
-                    }
-                    
-                    // Update switch mode button text
-                    for &child in children.iter() {
-                        if let Ok(mut text) = text_query.get_mut(child) {
-                            text.sections[0].value = if login_state.is_register_mode {
-                                "Zurück zum Login".to_string()
-                            } else {
-                                "Neuen Account erstellen".to_string()
-                            };
-                        }
-                    }
-                }
-                LoginButton::Submit => {
-                    perform_login_submit(&mut login_state, network.as_deref());
-                }
-                LoginButton::FocusUsername => {
-                    login_state.active_field = InputField::Username;
-                }
-                LoginButton::FocusPassword => {
-                    login_state.active_field = InputField::Password;
-                }
-                LoginButton::FocusEmail => {
-                    login_state.active_field = InputField::Email;
-                }
-            }
-        }
+        text.sections[0].value = display;
     }
 }
 
 fn update_submit_button_text(
     login_state: Res<LoginState>,
-    mut query: Query<&mut Text, With<SubmitButtonText>>,
+    mut text_query: Query<&mut Text, With<SubmitButtonText>>,
 ) {
-    if login_state.is_changed() {
-        for mut text in query.iter_mut() {
-            text.sections[0].value = if login_state.is_register_mode {
-                "Registrieren".to_string()
-            } else {
-                "Einloggen".to_string()
-            };
-        }
+    if !login_state.is_changed() {
+        return;
+    }
+
+    for mut text in text_query.iter_mut() {
+        text.sections[0].value = if login_state.is_register_mode {
+            "⚔ CREATE ACCOUNT ⚔".to_string()
+        } else {
+            "⚔ ENTER REALM ⚔".to_string()
+        };
     }
 }
 
 fn update_status_display(
     login_state: Res<LoginState>,
-    mut query: Query<&mut Text, With<StatusDisplay>>,
+    mut text_query: Query<&mut Text, With<StatusDisplay>>,
 ) {
-    if login_state.is_changed() && !login_state.status_message.is_empty() {
-        for mut text in query.iter_mut() {
-            text.sections[0].value = login_state.status_message.clone();
-            // Set color based on message content
-            if login_state.status_message.contains("erfolgreich") || login_state.status_message.contains("Verbinde") {
-                text.sections[0].style.color = Color::srgb(0.3, 1.0, 0.3);
-            } else if login_state.status_message.contains("fehlgeschlagen") || login_state.status_message.contains("fehler") || login_state.status_message.contains("muss") {
-                text.sections[0].style.color = Color::srgb(1.0, 0.3, 0.3);
-            } else {
-                text.sections[0].style.color = Color::srgb(0.7, 0.7, 0.7);
-            }
-        }
+    if !login_state.is_changed() {
+        return;
+    }
+
+    for mut text in text_query.iter_mut() {
+        text.sections[0].value = login_state.status_message.clone();
     }
 }
 
 fn handle_auth_response_ui(
     mut auth_events: EventReader<AuthResponseEvent>,
     mut login_state: ResMut<LoginState>,
-    mut register_fields_query: Query<&mut Style, With<RegisterFields>>,
 ) {
     for event in auth_events.read() {
         match &event.0 {
             AuthResponse::LoginSuccess { .. } => {
-                // Success handled by networking module
+                login_state.status_message = "Success! Loading world...".to_string();
             }
             AuthResponse::LoginFailed { reason } => {
-                login_state.status_message = format!("Login fehlgeschlagen: {}", reason);
+                login_state.status_message = format!("Login failed: {}", reason);
             }
             AuthResponse::RegisterSuccess => {
-                login_state.status_message = "✓ Registrierung erfolgreich! Du kannst dich jetzt einloggen.".to_string();
+                login_state.status_message = "Account created! Please login.".to_string();
                 login_state.is_register_mode = false;
-                login_state.password.clear(); // Clear password for security
-                login_state.email.clear();
-                
-                // Hide register fields
-                for mut style in register_fields_query.iter_mut() {
-                    style.display = Display::None;
-                }
             }
             AuthResponse::RegisterFailed { reason } => {
-                login_state.status_message = format!("Registrierung fehlgeschlagen: {}", reason);
+                login_state.status_message = format!("Registration failed: {}", reason);
             }
         }
     }

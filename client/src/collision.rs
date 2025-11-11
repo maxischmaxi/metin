@@ -280,12 +280,12 @@ pub struct TriggerEntered {
     pub entered_by: Entity,
 }
 
-/// Internal struct for collision information
+/// Collision information struct
 #[derive(Debug)]
-struct CollisionInfo {
-    penetration_depth: f32,
-    normal: Vec3, // Points from A to B
-    contact_point: Vec3,
+pub struct CollisionInfo {
+    pub penetration_depth: f32,
+    pub normal: Vec3, // Points from A to B
+    pub contact_point: Vec3,
 }
 
 // ==================== AUTO-COLLIDER SYSTEM (Phase 1) ====================
@@ -1336,7 +1336,7 @@ fn update_colliding_with(
 
 /// Check collision between two shapes
 /// Now supports rotation for accurate Oriented Bounding Box (OBB) collision
-fn check_collision(
+pub fn check_collision(
     pos_a: Vec3,
     rot_a: Quat,
     shape_a: &ColliderShape,
@@ -1770,7 +1770,8 @@ fn check_cylinder_sphere(
 // ==================== PHASE 2: COLLISION RESOLUTION ====================
 
 /// Resolves collisions by pushing entities apart
-/// This system runs after collision detection and prevents entities from overlapping
+/// NOTE: Player collision is now handled predictively in player_movement()
+/// This system only handles NPCs, monsters, and other dynamic non-player entities
 fn resolve_collisions(
     mut query: Query<(
         Entity,
@@ -1778,7 +1779,7 @@ fn resolve_collisions(
         &Collider,
         &CollidingWith,
         Option<&CollisionPushback>,
-    )>,
+    ), Without<crate::player::Player>>,  // Exclude player - handled predictively
 ) {
     // Collect all collision pairs that need resolution
     let mut resolutions: Vec<CollisionResolution> = Vec::new();
@@ -1851,11 +1852,11 @@ fn resolve_collisions(
         match resolution.resolution_type {
             ResolutionType::DynamicVsStatic { dynamic_entity, pushback_strength } => {
                 // Push dynamic entity out of static object
-                // Use minimal pushback to avoid bouncing - just enough to separate
+                // Instant separation - no bouncing
                 if let Ok((_, mut transform, _, _, _)) = query.get_mut(dynamic_entity) {
-                    // Only push if actually penetrating (> 0.01 to avoid micro-jitter)
-                    if resolution.penetration > 0.01 {
-                        // Minimal separation - just get out of collision
+                    // Only push if actually penetrating
+                    if resolution.penetration > 0.001 {
+                        // Full separation - instant push out
                         let separation = resolution.normal * resolution.penetration;
                         transform.translation -= separation;
                     }

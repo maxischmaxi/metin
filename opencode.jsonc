@@ -3,7 +3,7 @@
   "model": "anthropic/claude-sonnet-4-5-20250929",
   "autoupdate": true,
   "provider": {},
-  "instructions": ["AGENTS.md", "README.md"],
+  "instructions": ["README.md"],
   "theme": "tokyonight",
   "permission": {
     "edit": "allow",

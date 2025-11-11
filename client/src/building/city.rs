@@ -1,9 +1,10 @@
 use bevy::prelude::*;
-use crate::collision::{AutoCollider, CollisionDetail, CollisionType, CollisionLayer, PreferredShape};
+// Old collision system removed - now using bevy_rapier3d!
 use crate::player::GameWorld;
 use super::{Building, BuildingType, RoofType, MaterialConfig, materials, spawn_building_with_roof, FloorPlan, trim_material, create_prism_roof, create_pyramid_roof, floor_plans};
 use super::details::{spawn_windows_for_floor, spawn_door, spawn_fachwerk_for_floor, spawn_corner_stones, spawn_door_trim, spawn_roof_ridge};
 use super::decorations::{spawn_chimneys, spawn_lanterns, spawn_barrels, spawn_crates};
+use super::optimized_spawner::spawn_building_optimized;
 
 /// Spawns all city buildings with roofs and PBR materials
 /// This is the STEP 1 implementation with roofs and better materials
@@ -42,13 +43,7 @@ pub fn spawn_city_buildings(
                 commands.entity(entity).insert((
                     Building,
                     $type,
-                    AutoCollider {
-                        detail: CollisionDetail::Low,
-                        collision_type: CollisionType::Static,
-                        layer: CollisionLayer::World,
-                        padding: 0.0,
-                        preferred_shape: Some(PreferredShape::Box),
-                    },
+        // OLD: AutoCollider removed - using Rapier physics
                     GameWorld,
                 ));
             }
@@ -60,7 +55,7 @@ pub fn spawn_city_buildings(
     // 1. Inn/Tavern - NOW USING FLOOR SYSTEM (STEP 2)! 🏛️
     {
         let inn_plan = floor_plans::inn(15.0, 12.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -71,10 +66,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 2. Weapon Smith - FLOOR SYSTEM 🏛️
+    // 2. Weapon Smith - OPTIMIZED ⚡
     {
         let plan = floor_plans::smithy(10.0, 9.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -85,10 +80,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 3. Townhouse North 1 - FLOOR SYSTEM 🏛️
+    // 3. Townhouse North 1 - OPTIMIZED ⚡
     {
         let plan = floor_plans::townhouse_3_floors(7.0, 7.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -99,10 +94,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 4. House North 2 - FLOOR SYSTEM 🏛️
+    // 4. House North 2 - OPTIMIZED ⚡
     {
         let plan = floor_plans::house_2_floors(8.0, 8.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -113,10 +108,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 5. Guard Tower - FLOOR SYSTEM 🏛️
+    // 5. Guard Tower - OPTIMIZED ⚡
     {
         let plan = floor_plans::tower(6.0, 6.0, 5); // 5 floors
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -129,13 +124,13 @@ pub fn spawn_city_buildings(
 
     // EAST SIDE
 
-    // 6. Market Hall - FLOOR SYSTEM 🏛️
+    // 6. Market Hall - OPTIMIZED ⚡
     {
         let plan = floor_plans::single_story(
             10.0, 18.0, 5.0,
             materials::brick()
         );
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -146,10 +141,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 7. House East 1 - FLOOR SYSTEM 🏛️
+    // 7. House East 1 - OPTIMIZED ⚡
     {
         let plan = floor_plans::house_2_floors(9.0, 8.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -160,10 +155,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 8. Warehouse - FLOOR SYSTEM 🏛️
+    // 8. Warehouse - OPTIMIZED ⚡
     {
         let plan = floor_plans::warehouse(7.0, 10.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -176,10 +171,10 @@ pub fn spawn_city_buildings(
 
     // SOUTH SIDE
 
-    // 9. Blacksmith - FLOOR SYSTEM 🏛️
+    // 9. Blacksmith - OPTIMIZED ⚡
     {
         let plan = floor_plans::smithy(12.0, 10.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -190,7 +185,7 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 10. Alchemist Tower - FLOOR SYSTEM 🏛️
+    // 10. Alchemist Tower - OPTIMIZED ⚡
     {
         let plan = floor_plans::tower(8.0, 8.0, 4); // 4-floor tower
         // But override with purple color
@@ -215,7 +210,7 @@ pub fn spawn_city_buildings(
             metallic: 0.0,
             reflectance: 0.3,
         };
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -226,10 +221,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 11. House South 1 - FLOOR SYSTEM 🏛️
+    // 11. House South 1 - OPTIMIZED ⚡
     {
         let plan = floor_plans::house_2_floors(8.0, 9.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -240,10 +235,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 12. Cottage South 2 - FLOOR SYSTEM 🏛️
+    // 12. Cottage South 2 - OPTIMIZED ⚡
     {
         let plan = floor_plans::house_2_floors(7.0, 7.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -256,10 +251,10 @@ pub fn spawn_city_buildings(
 
     // WEST SIDE
 
-    // 13. Cathedral/Temple - FLOOR SYSTEM 🏛️
+    // 13. Cathedral/Temple - OPTIMIZED ⚡
     {
         let plan = floor_plans::cathedral(14.0, 20.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -270,10 +265,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 14. Library - FLOOR SYSTEM 🏛️
+    // 14. Library - OPTIMIZED ⚡
     {
         let plan = floor_plans::library(11.0, 11.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -284,10 +279,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 15. House West 1 - FLOOR SYSTEM 🏛️
+    // 15. House West 1 - OPTIMIZED ⚡
     {
         let plan = floor_plans::house_2_floors(8.0, 8.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -298,10 +293,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 16. Workshop - FLOOR SYSTEM 🏛️
+    // 16. Workshop - OPTIMIZED ⚡
     {
         let plan = floor_plans::workshop(10.0, 8.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -312,10 +307,10 @@ pub fn spawn_city_buildings(
         );
     }
 
-    // 17. Chapel - FLOOR SYSTEM 🏛️
+    // 17. Chapel - OPTIMIZED ⚡
     {
         let plan = floor_plans::chapel(8.0, 7.0);
-        spawn_building_with_floors(
+        spawn_building_optimized(
             commands,
             meshes,
             materials,
@@ -338,15 +333,8 @@ pub fn spawn_city_buildings(
             transform: Transform::from_xyz(-6.0, 1.5, 6.0),
             ..default()
         },
-        crate::collision::Collider {
-            shape: crate::collision::ColliderShape::Cylinder {
-                radius: 2.5,
-                height: 3.0,
-            },
-            collision_type: CollisionType::Static,
-            layer: CollisionLayer::World,
-        },
-        crate::collision::CollidingWith::default(),
+        bevy_rapier3d::prelude::RigidBody::Fixed,
+        bevy_rapier3d::prelude::Collider::cylinder(1.5, 2.5),  // half_height, radius
         GameWorld,
     ));
 
@@ -360,15 +348,8 @@ pub fn spawn_city_buildings(
             transform: Transform::from_xyz(8.0, 2.5, -8.0),
             ..default()
         },
-        crate::collision::Collider {
-            shape: crate::collision::ColliderShape::Cylinder {
-                radius: 1.0,
-                height: 5.0,
-            },
-            collision_type: CollisionType::Static,
-            layer: CollisionLayer::World,
-        },
-        crate::collision::CollidingWith::default(),
+        bevy_rapier3d::prelude::RigidBody::Fixed,
+        bevy_rapier3d::prelude::Collider::cuboid(1.0, 2.5, 1.0),  // half-extents
         GameWorld,
     ));
 
@@ -414,7 +395,7 @@ pub fn spawn_city_buildings(
 
 /// Spawns a multi-floor building with separate floors, trim, and color gradients
 /// 
-/// # STEP 2 IMPLEMENTATION
+/// # OPTIMIZED MESH BATCHING
 /// This creates visually distinct floors with:
 /// - Separate entities for each floor
 /// - Trim/molding between floors (thin dark wood strips)
@@ -465,13 +446,7 @@ pub fn spawn_building_with_floors(
         },
         Building,
         building_type,
-        AutoCollider {
-            detail: CollisionDetail::Low,
-            collision_type: CollisionType::Static,
-            layer: CollisionLayer::World,
-            padding: 0.0,
-            preferred_shape: Some(PreferredShape::Box),
-        },
+        // OLD: AutoCollider removed - using Rapier physics
         GameWorld,
     )).id();
     
@@ -523,13 +498,7 @@ pub fn spawn_building_with_floors(
                 ).with_rotation(Quat::from_rotation_y(rotation)),
                 ..default()
             },
-            AutoCollider {
-                detail: CollisionDetail::Low,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::Box),
-            },
+        // OLD: AutoCollider removed - using Rapier physics
             GameWorld,
         ));
         
@@ -582,13 +551,7 @@ pub fn spawn_building_with_floors(
                 ).with_rotation(Quat::from_rotation_y(rotation)),
                 ..default()
             },
-            AutoCollider {
-                detail: CollisionDetail::Low,
-                collision_type: CollisionType::Static,
-                layer: CollisionLayer::World,
-                padding: 0.0,
-                preferred_shape: Some(PreferredShape::Box),
-            },
+        // OLD: AutoCollider removed - using Rapier physics
             GameWorld,
         ));
         

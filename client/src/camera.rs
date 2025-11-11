@@ -140,7 +140,16 @@ fn orbit_camera_mouse(
     mut mouse_motion: EventReader<MouseMotion>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut query: Query<(&mut OrbitCamera, &mut Transform)>,
+    pause_state: Res<crate::ui::PauseMenuState>,
+    settings_state: Res<crate::ui::SettingsMenuState>,
 ) {
+    // Don't rotate camera if pause menu or settings menu is open
+    if pause_state.visible || settings_state.visible {
+        // Consume events to prevent them from stacking up
+        mouse_motion.clear();
+        return;
+    }
+    
     let mut delta = Vec2::ZERO;
     for motion in mouse_motion.read() {
         delta += motion.delta;
@@ -160,7 +169,16 @@ fn orbit_camera_mouse(
 fn orbit_camera_zoom(
     mut scroll: EventReader<MouseWheel>,
     mut query: Query<(&mut OrbitCamera, &mut Transform)>,
+    pause_state: Res<crate::ui::PauseMenuState>,
+    settings_state: Res<crate::ui::SettingsMenuState>,
 ) {
+    // Don't zoom camera if pause menu or settings menu is open
+    if pause_state.visible || settings_state.visible {
+        // Consume events to prevent them from stacking up
+        scroll.clear();
+        return;
+    }
+    
     let mut total_scroll = 0.0;
     for event in scroll.read() {
         total_scroll += event.y;
@@ -209,8 +227,15 @@ fn toggle_free_cam(
     mut free_cam_state: ResMut<FreeCamState>,
     mut commands: Commands,
     mut camera_query: Query<(Entity, &mut Transform, Option<&OrbitCamera>, Option<&FreeCam>), With<MainCamera>>,
+    pause_state: Res<crate::ui::PauseMenuState>,
+    settings_state: Res<crate::ui::SettingsMenuState>,
 ) {
     if !keyboard.just_pressed(KeyCode::F5) {
+        return;
+    }
+    
+    // Don't allow free cam toggle when pause menu or settings menu is open
+    if pause_state.visible || settings_state.visible {
         return;
     }
     
@@ -254,7 +279,13 @@ fn free_cam_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut camera_query: Query<(&mut Transform, &FreeCam)>,
+    pause_state: Res<crate::ui::PauseMenuState>,
+    settings_state: Res<crate::ui::SettingsMenuState>,
 ) {
+    // Don't move free cam if pause menu or settings menu is open
+    if pause_state.visible || settings_state.visible {
+        return;
+    }
     for (mut transform, free_cam) in camera_query.iter_mut() {
         let mut velocity = Vec3::ZERO;
         let forward = *transform.forward();
@@ -305,7 +336,16 @@ fn free_cam_mouse(
     mut mouse_motion: EventReader<MouseMotion>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut camera_query: Query<(&mut Transform, &FreeCam)>,
+    pause_state: Res<crate::ui::PauseMenuState>,
+    settings_state: Res<crate::ui::SettingsMenuState>,
 ) {
+    // Don't rotate free cam if pause menu or settings menu is open
+    if pause_state.visible || settings_state.visible {
+        // Consume events to prevent them from stacking up
+        mouse_motion.clear();
+        return;
+    }
+    
     // Only rotate when right mouse button is held (same as orbit cam)
     if !mouse_buttons.pressed(MouseButton::Right) {
         return;

@@ -4,7 +4,6 @@ use crate::camera::OrbitCamera;
 use crate::auth_state::SpawnPosition;
 use crate::networking::NetworkClient;
 use crate::collision::{Collider, ColliderShape, CollisionType, CollisionLayer, CollidingWith, CollisionPushback};
-// Rapier is used via full path to avoid namespace pollution
 use crate::GameFont;
 use shared::ClientMessage;
 use std::time::Duration;
@@ -21,6 +20,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnExit(GameState::InGame), (send_disconnect, cleanup_nameplate_ui))
             .add_systems(Update, (
                 player_movement,
+                enforce_ground_collision, // WICHTIG: Verhindert unter-Boden fallen
                 send_position_updates,
                 update_nameplate_marker_position,
                 update_nameplate_ui_position,
@@ -66,17 +66,16 @@ fn setup_player(
 ) {
     // Only spawn player if it doesn't exist yet
     if player_query.is_empty() {
-        // Use spawn position from server, or default to (0, 3, 0)
-        // IMPORTANT: Y=3.0 so player can fall and test gravity!
+        // Use spawn position from server, or default to (0, 1, 0)
         let spawn_pos = if spawn_position.0.length() > 0.1 {
             spawn_position.0
         } else {
-            Vec3::new(0.0, 3.0, 0.0)  // Higher spawn to test gravity
+            Vec3::new(0.0, 1.0, 0.0)
         };
         
         info!("Spawning player at position: {:?}", spawn_pos);
         
-        // Spawn player at loaded position with RAPIER PHYSICS!
+        // Spawn player at loaded position
         commands.spawn((
             PbrBundle {
                 mesh: meshes.add(Capsule3d::new(0.5, 1.5)),
@@ -85,28 +84,13 @@ fn setup_player(
                 ..default()
             },
             Player { speed: 5.0 },
-            // RAPIER PHYSICS - Gravity & Collision!
-            bevy_rapier3d::prelude::RigidBody::Dynamic,  // Dynamic = affected by gravity
-            bevy_rapier3d::prelude::Collider::capsule_y(0.75, 0.5),  // half_height, radius
-            bevy_rapier3d::prelude::Velocity::default(),  // Initial velocity (0,0,0)
-            bevy_rapier3d::prelude::LockedAxes::ROTATION_LOCKED,  // Don't tip over!
-            bevy_rapier3d::prelude::GravityScale(1.0),  // Full gravity
-            bevy_rapier3d::prelude::Damping {
-                linear_damping: 0.5,   // Air resistance
-                angular_damping: 1.0,  // Prevent spinning
-            },
-            bevy_rapier3d::prelude::Friction {
-                coefficient: 0.7,
-                combine_rule: bevy_rapier3d::prelude::CoefficientCombineRule::Average,
-            },
-            // Old collision components (keep for NPCs compatibility)
             Collider {
                 shape: ColliderShape::Cylinder {
                     radius: 0.5,
                     height: 1.5,
                 },
                 collision_type: CollisionType::Dynamic,
-                layer: CollisionLayer::Player,
+                layer: CollisionLayer::Player,  // Phase 3
             },
             CollisionPushback { strength: 0.8 },
             CollidingWith::default(),
@@ -125,24 +109,12 @@ fn setup_player(
         ));
 
         // Spawn ground plane (large medieval city area)
-        // Visual mesh at Y=0, collider BELOW at Y=-0.5 to avoid clipping
         commands.spawn((
             PbrBundle {
                 mesh: meshes.add(Plane3d::default().mesh().size(150.0, 150.0)),
                 material: materials.add(Color::srgb(0.3, 0.7, 0.3)),
-                transform: Transform::from_xyz(0.0, 0.0, 0.0),
                 ..default()
             },
-            GameWorld,
-        ));
-        
-        // Invisible ground collider BELOW the visual mesh
-        commands.spawn((
-            TransformBundle::from_transform(
-                Transform::from_xyz(0.0, -0.5, 0.0)  // 0.5 units below surface
-            ),
-            bevy_rapier3d::prelude::RigidBody::Fixed,
-            bevy_rapier3d::prelude::Collider::cuboid(75.0, 0.5, 75.0),  // Thin ground collider
             GameWorld,
         ));
 
@@ -161,8 +133,24 @@ fn setup_player(
         // All buildings now have roofs and PBR materials (Step 1 complete!)
         crate::building::spawn_city_buildings(&mut commands, &mut meshes, &mut materials);
 
-        // Old DirectionalLight removed - now using dynamic sun from skybox.rs!
-        // The skybox system provides a moving sun with proper day/night cycle
+        // Spawn light
+        commands.spawn((
+            DirectionalLightBundle {
+                directional_light: DirectionalLight {
+                    illuminance: 10000.0,
+                    shadows_enabled: true,
+                    ..default()
+                },
+                transform: Transform::from_rotation(Quat::from_euler(
+                    EulerRot::XYZ,
+                    -std::f32::consts::FRAC_PI_4,
+                    std::f32::consts::FRAC_PI_4,
+                    0.0,
+                )),
+                ..default()
+            },
+            GameWorld,
+        ));
     }
 }
 
@@ -179,17 +167,11 @@ fn cleanup_player(
 fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut player_query: Query<(&mut bevy_rapier3d::prelude::Velocity, &mut Transform, &Player)>,
+    mut player_query: Query<(Entity, &mut Transform, &Player, &Collider)>,
+    obstacle_query: Query<(&Transform, &Collider), Without<Player>>,
     camera_query: Query<&OrbitCamera>,
     free_cam_state: Res<crate::camera::FreeCamState>,
-    pause_state: Res<crate::ui::PauseMenuState>,
-    settings_state: Res<crate::ui::SettingsMenuState>,
 ) {
-    // Don't move player if pause menu or settings menu is open
-    if pause_state.visible || settings_state.visible {
-        return;
-    }
-    
     // Don't move player if free cam is active
     if free_cam_state.active {
         return;
@@ -201,7 +183,7 @@ fn player_movement(
         .map(|cam| cam.yaw)
         .unwrap_or(0.0);
 
-    for (mut velocity, mut transform, player) in player_query.iter_mut() {
+    for (_player_entity, mut transform, player, player_collider) in player_query.iter_mut() {
         let mut input_direction = Vec3::ZERO;
 
         // Get input in local camera space
@@ -225,10 +207,54 @@ fn player_movement(
             let rotation = Quat::from_rotation_y(camera_yaw);
             let world_direction = rotation * input_direction;
             
-            // Set horizontal velocity (keep Y velocity for gravity!)
-            let speed = player.speed;
-            velocity.linvel.x = world_direction.x * speed;
-            velocity.linvel.z = world_direction.z * speed;
+            // Calculate desired movement
+            let movement = world_direction * player.speed * time.delta_seconds();
+            
+            // PREDICTIVE COLLISION: Test if new position would collide
+            let current_pos = transform.translation;
+            let desired_pos = current_pos + movement;
+            
+            // Check collision at desired position BEFORE moving
+            let mut final_movement = movement;
+            
+            for (obstacle_transform, obstacle_collider) in obstacle_query.iter() {
+                // Skip triggers - they don't block movement
+                if obstacle_collider.collision_type == CollisionType::Trigger {
+                    continue;
+                }
+                
+                // Check if this layer can collide with player
+                if !player_collider.layer.can_collide_with(&obstacle_collider.layer) {
+                    continue;
+                }
+                
+                let obstacle_pos = obstacle_transform.translation;
+                let obstacle_rot = obstacle_transform.rotation;
+                
+                // Test collision at DESIRED position (predictive)
+                if let Some(collision_info) = crate::collision::check_collision(
+                    desired_pos,
+                    transform.rotation,
+                    &player_collider.shape,
+                    obstacle_pos,
+                    obstacle_rot,
+                    &obstacle_collider.shape,
+                ) {
+                    // COLLISION WOULD OCCUR - prevent movement in that direction
+                    // Project movement onto plane perpendicular to collision normal
+                    // This allows "sliding" along walls
+                    let movement_dot_normal = final_movement.dot(collision_info.normal);
+                    
+                    // Only block movement if pushing INTO the obstacle
+                    if movement_dot_normal > 0.0 {
+                        // Remove component of movement that goes into obstacle
+                        final_movement -= collision_info.normal * movement_dot_normal;
+                    }
+                }
+            }
+            
+            // Apply the safe movement (either full movement or projected slide)
+            transform.translation += final_movement;
             
             // Rotate player to face movement direction
             if world_direction.length() > 0.0 {
@@ -237,15 +263,31 @@ fn player_movement(
                 );
                 transform.rotation = target_rotation;
             }
-        } else {
-            // No input - stop horizontal movement (but keep falling!)
-            velocity.linvel.x = 0.0;
-            velocity.linvel.z = 0.0;
+        }
+        
+        // WICHTIG: Verhindere dass Spieler unter den Boden fällt
+        // Minimum Y-Position ist 0.9 (Spieler-Kapsel ist 1.5 hoch, Radius 0.5)
+        // Bei Y=0.9 ist der Boden der Kapsel bei 0.9-0.75 = 0.15, also über Y=0
+        if transform.translation.y < 0.9 {
+            transform.translation.y = 0.9;
         }
     }
 }
 
-// enforce_ground_collision() removed - Rapier physics handles this now!
+/// Enforce ground collision - player can NEVER fall below Y=0.9
+/// This runs every frame to catch any collision bugs or physics issues
+fn enforce_ground_collision(
+    mut player_query: Query<&mut Transform, With<Player>>,
+) {
+    const MIN_Y: f32 = 0.9; // Minimum Y position (Spieler-Kapsel ist 1.5 hoch, Radius 0.5)
+    
+    for mut transform in player_query.iter_mut() {
+        if transform.translation.y < MIN_Y {
+            // Snap player back to minimum height
+            transform.translation.y = MIN_Y;
+        }
+    }
+}
 
 /// Send position updates to server periodically
 fn send_position_updates(
