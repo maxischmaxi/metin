@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_rapier3d::prelude::*;
 use crate::GameState;
 use crate::npc::{Npc, NpcType};
 use crate::player::Player;
@@ -56,6 +57,7 @@ fn mouse_click_system(
     player_query: Query<&Transform, With<Player>>,
     mut npc_dialog_state: ResMut<NpcDialogState>,
     mut ui_stack: ResMut<UILayerStack>,
+    rapier_context: Res<RapierContext>,
 ) {
     // Only process left mouse button clicks
     if !mouse_button.just_pressed(MouseButton::Left) {
@@ -76,6 +78,9 @@ fn mouse_click_system(
     let Some(ray) = camera.viewport_to_world(camera_transform, cursor_position) else { return };
     
     // Check all NPCs for intersection
+    let mut closest_npc: Option<(Entity, &Npc, f32)> = None;
+    let mut closest_distance = f32::INFINITY;
+    
     for (entity, npc_transform, npc) in npc_query.iter() {
         let npc_pos = npc_transform.translation;
         let distance_to_player = player_transform.translation.distance(npc_pos);
@@ -96,12 +101,48 @@ fn mouse_click_system(
             
             // NPC has radius of 0.4, but we give a generous click radius for easier interaction
             if distance < 1.5 {
-                // Successfully clicked on NPC!
-                npc_dialog_state.open_dialog(entity, npc.npc_type, npc.name.clone());
-                // Register UI layer immediately so ESC handler sees it
-                ui_stack.push_layer(UILayerType::NpcDialog);
-                break;
+                // Calculate distance from camera to NPC
+                let camera_to_npc_distance = (npc_pos - ray.origin).length();
+                
+                // Track closest NPC that was clicked
+                if camera_to_npc_distance < closest_distance {
+                    closest_distance = camera_to_npc_distance;
+                    closest_npc = Some((entity, npc, camera_to_npc_distance));
+                }
             }
+        }
+    }
+    
+    // If we found a clicked NPC, check if line of sight is clear
+    if let Some((entity, npc, distance_to_npc)) = closest_npc {
+        let ray_origin = ray.origin;
+        let ray_direction = *ray.direction;
+        
+        // Perform Rapier raycast to check for obstacles
+        // We cast from camera to NPC position with max distance
+        if let Some((hit_entity, _hit_distance)) = rapier_context.cast_ray(
+            ray_origin,
+            ray_direction,
+            distance_to_npc,
+            true, // solid (stop at first hit)
+            QueryFilter::default(),
+        ) {
+            // Check if the first thing we hit is the NPC we're trying to interact with
+            if hit_entity == entity {
+                // Clear line of sight - open dialog!
+                npc_dialog_state.open_dialog(entity, npc.npc_type, npc.name.clone());
+                ui_stack.push_layer(UILayerType::NpcDialog);
+                info!("NPC clicked with clear line of sight: {}", npc.name);
+            } else {
+                // Something is blocking - don't open dialog
+                info!("NPC click blocked by obstacle (hit entity: {:?})", hit_entity);
+            }
+        } else {
+            // No collision detected at all - this shouldn't happen if NPC has collider
+            // but we'll allow interaction anyway
+            warn!("No raycast hit detected, but allowing NPC interaction");
+            npc_dialog_state.open_dialog(entity, npc.npc_type, npc.name.clone());
+            ui_stack.push_layer(UILayerType::NpcDialog);
         }
     }
 }

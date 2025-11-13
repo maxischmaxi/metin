@@ -5,6 +5,7 @@ use bevy::input::ButtonState;
 use crate::GameState;
 use crate::GameFont;
 use crate::networking::{NetworkClient, send_auth_request, AuthResponseEvent};
+use crate::ui::game_ui::DevModeState;
 use shared::{AuthMessage, AuthResponse};
 
 pub struct LoginPlugin;
@@ -12,6 +13,7 @@ pub struct LoginPlugin;
 impl Plugin for LoginPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LoginState>()
+            .init_resource::<DevModeState>()
             .add_systems(OnEnter(GameState::Login), setup_login)
             .add_systems(OnExit(GameState::Login), cleanup_login)
             .add_systems(Update, (
@@ -101,13 +103,20 @@ const MEDIEVAL_RED: Color = Color::srgb(0.65, 0.15, 0.15);
 const MEDIEVAL_BORDER_GOLD: Color = Color::srgb(0.75, 0.60, 0.15);
 const MEDIEVAL_ACTIVE_GOLD: Color = Color::srgb(1.0, 0.80, 0.20);
 
-fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font: Res<GameFont>, time: Res<Time>) {
+fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font: Res<GameFont>, time: Res<Time>, dev_mode: Res<DevModeState>) {
     login_state.username.clear();
     login_state.password.clear();
     login_state.email.clear();
     login_state.is_register_mode = false;
     login_state.active_field = InputField::Username;
     login_state.status_message.clear();
+
+    // Dev Mode: Auto-fill credentials
+    if dev_mode.enabled {
+        login_state.username = "max".to_string();
+        login_state.password = "wdghkla123".to_string();
+        info!("Dev Mode: Auto-filled login credentials (max/wdghkla123)");
+    }
 
     let font_handle = font.0.clone();
 
@@ -322,6 +331,34 @@ fn setup_login(mut commands: Commands, mut login_state: ResMut<LoginState>, font
                     },
                 ));
             });
+
+            // Dev Mode Indicator
+            if dev_mode.enabled {
+                parent.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        padding: UiRect::all(Val::Px(10.0)),
+                        margin: UiRect::top(Val::Px(10.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    background_color: Color::srgb(0.2, 0.3, 0.5).with_alpha(0.3).into(),
+                    border_color: Color::srgb(0.4, 0.6, 1.0).into(),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    parent.spawn(TextBundle::from_section(
+                        "🔧 DEV MODE: Auto-filled (max/wdghkla123)",
+                        TextStyle {
+                            font: font_handle.clone(),
+                            font_size: 14.0,
+                            color: Color::srgb(0.6, 0.8, 1.0),
+                            ..default()
+                        },
+                    ));
+                });
+            }
 
             // Status message
             parent.spawn((

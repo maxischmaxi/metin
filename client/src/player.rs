@@ -15,12 +15,16 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app
             .init_resource::<PositionUpdateTimer>()
+            .init_resource::<PlayerAnimations>()
             .add_systems(OnEnter(GameState::InGame), (setup_player, setup_nameplate_ui))
             .add_systems(OnEnter(GameState::CharacterSelection), cleanup_player)
             .add_systems(OnEnter(GameState::Login), cleanup_player)
             .add_systems(OnExit(GameState::InGame), (send_disconnect, cleanup_nameplate_ui))
             .add_systems(Update, (
                 player_movement,
+                debug_scene_hierarchy,
+                setup_animation_player,
+                update_player_animation,
                 send_position_updates,
                 update_nameplate_marker_position,
                 update_nameplate_ui_position,
@@ -57,12 +61,43 @@ impl Default for PositionUpdateTimer {
 #[derive(Component)]
 struct LastSentPosition(Vec3);
 
+/// Resource holding animation clip handles
+#[derive(Resource)]
+struct PlayerAnimations {
+    graph: Handle<AnimationGraph>,
+    idle_index: AnimationNodeIndex,
+    walk_index: AnimationNodeIndex,
+}
+
+impl Default for PlayerAnimations {
+    fn default() -> Self {
+        Self {
+            graph: Handle::default(),
+            idle_index: AnimationNodeIndex::new(0),
+            walk_index: AnimationNodeIndex::new(0),
+        }
+    }
+}
+
+/// Component to track player's animation state
+#[derive(Component)]
+struct PlayerAnimationState {
+    is_moving: bool,
+}
+
+/// Marker for the animated model entity
+#[derive(Component)]
+struct PlayerModel;
+
 fn setup_player(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     player_query: Query<&Player>,
     spawn_position: Res<SpawnPosition>,
+    asset_server: Res<AssetServer>,
+    mut player_anims: ResMut<PlayerAnimations>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     // Only spawn player if it doesn't exist yet
     if player_query.is_empty() {
@@ -76,18 +111,38 @@ fn setup_player(
         
         info!("Spawning player at position: {:?}", spawn_pos);
         
-        // Spawn player at loaded position with RAPIER PHYSICS!
-        commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Capsule3d::new(0.5, 1.5)),
-                material: materials.add(Color::srgb(0.3, 0.5, 0.8)),
+        // Load animation library
+        let model_path = "models/animation_library/Godot/AnimationLibrary_Godot_Standard.glb";
+        
+        // Load animation clips
+        let idle_clip: Handle<AnimationClip> = asset_server.load(GltfAssetLabel::Animation(9).from_asset(model_path));
+        let walk_clip: Handle<AnimationClip> = asset_server.load(GltfAssetLabel::Animation(13).from_asset(model_path));
+        
+        // Create animation graph
+        let mut graph = AnimationGraph::new();
+        let idle_index = graph.add_clip(idle_clip, 1.0, graph.root);
+        let walk_index = graph.add_clip(walk_clip, 1.0, graph.root);
+        
+        let graph_handle = graphs.add(graph);
+        
+        player_anims.graph = graph_handle.clone();
+        player_anims.idle_index = idle_index;
+        player_anims.walk_index = walk_index;
+        
+        info!("Created animation graph with Idle (index 9) and Walk (index 13)");
+        
+        // Character model dimensions: Height=1.829, Feet at Y=0, Head at Y=1.829
+        // We adjust the collider to match the character precisely
+        
+        // Spawn player entity with physics (invisible parent)
+        let player_entity = commands.spawn((
+            SpatialBundle {
                 transform: Transform::from_translation(spawn_pos),
                 ..default()
             },
             Player { speed: 5.0 },
             // RAPIER PHYSICS - Gravity & Collision!
             bevy_rapier3d::prelude::RigidBody::Dynamic,  // Dynamic = affected by gravity
-            bevy_rapier3d::prelude::Collider::capsule_y(0.75, 0.5),  // half_height, radius
             bevy_rapier3d::prelude::Velocity::default(),  // Initial velocity (0,0,0)
             bevy_rapier3d::prelude::LockedAxes::ROTATION_LOCKED,  // Don't tip over!
             bevy_rapier3d::prelude::GravityScale(1.0),  // Full gravity
@@ -102,8 +157,8 @@ fn setup_player(
             // Old collision components (keep for NPCs compatibility)
             Collider {
                 shape: ColliderShape::Cylinder {
-                    radius: 0.5,
-                    height: 1.5,
+                    radius: 0.3,
+                    height: 1.829,
                 },
                 collision_type: CollisionType::Dynamic,
                 layer: CollisionLayer::Player,
@@ -111,13 +166,40 @@ fn setup_player(
             CollisionPushback { strength: 0.8 },
             CollidingWith::default(),
             LastSentPosition(spawn_pos),
+            PlayerAnimationState { is_moving: false },
             GameWorld,
-        ));
+        )).id();
+        
+        // Add Rapier collider as a child with offset
+        // Capsule collider: capsule_y(half_height, radius)
+        // Total height = 2*half_height + 2*radius (hemisphere caps)
+        // Character height = 1.829, radius = 0.3
+        // So: 2*half_height + 2*0.3 = 1.829 → half_height = 0.6145
+        commands.entity(player_entity).with_children(|parent| {
+            parent.spawn((
+                bevy_rapier3d::prelude::Collider::capsule_y(0.6145, 0.3),
+                TransformBundle::from(Transform::from_xyz(0.0, 0.9145, 0.0)), // Center at character center of mass
+            ));
+        });
+        
+        // Spawn 3D character model as child
+        // Note: AnimationPlayer will be automatically created by the GLTF scene
+        // Model feet are already at Y=0 in the GLB, so no offset needed
+        commands.entity(player_entity).with_children(|parent| {
+            parent.spawn((
+                SceneBundle {
+                    scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset(model_path)),
+                    transform: Transform::from_xyz(0.0, 0.0, 0.0), // No offset - feet at origin
+                    ..default()
+                },
+                PlayerModel,
+            ));
+        });
 
-        // Spawn invisible 3D marker for nameplate (2.5 units above player)
+        // Spawn invisible 3D marker for nameplate (1.2 units above player)
         commands.spawn((
             SpatialBundle {
-                transform: Transform::from_translation(spawn_pos + Vec3::Y * 2.5),
+                transform: Transform::from_translation(spawn_pos + Vec3::Y * 1.2),
                 ..default()
             },
             PlayerNameplate,
@@ -157,9 +239,9 @@ fn setup_player(
         // NORTH SIDE (behind the plaza)
         
         
-        // ==================== CITY BUILDINGS WITH ROOFS ====================
-        // All buildings now have roofs and PBR materials (Step 1 complete!)
-        crate::building::spawn_city_buildings(&mut commands, &mut meshes, &mut materials);
+        // ==================== MEDIEVAL CITY WITH KIT MODELS ====================
+        // Complete rebuild with Medieval Village Kit assets!
+        crate::building::spawn_city_buildings(&mut commands, &asset_server, &mut meshes, &mut materials);
 
         // Old DirectionalLight removed - now using dynamic sun from skybox.rs!
         // The skybox system provides a moving sun with proper day/night cycle
@@ -231,12 +313,13 @@ fn player_movement(
             velocity.linvel.z = world_direction.z * speed;
             
             // Rotate player to face movement direction
-            if world_direction.length() > 0.0 {
-                let target_rotation = Quat::from_rotation_y(
-                    world_direction.x.atan2(-world_direction.z)
-                );
-                transform.rotation = target_rotation;
-            }
+            // Calculate target angle from movement direction (world space X and Z)
+            let target_angle = world_direction.z.atan2(world_direction.x);
+            let target_rotation = Quat::from_rotation_y(-target_angle + std::f32::consts::FRAC_PI_2);
+            
+            // Smooth rotation (interpolate between current and target)
+            let rotation_speed = 12.0; // How fast player rotates (higher = faster)
+            transform.rotation = transform.rotation.slerp(target_rotation, rotation_speed * time.delta_seconds());
         } else {
             // No input - stop horizontal movement (but keep falling!)
             velocity.linvel.x = 0.0;
@@ -246,6 +329,149 @@ fn player_movement(
 }
 
 // enforce_ground_collision() removed - Rapier physics handles this now!
+
+/// Setup animation player on the loaded scene (using Added filter to catch newly loaded scenes)
+fn setup_animation_player(
+    mut commands: Commands,
+    player_model_query: Query<Entity, With<PlayerModel>>,
+    // Query for AnimationPlayer that was just added (when GLTF loads)
+    mut added_animation_players: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
+    children_query: Query<&Children>,
+    player_anims: Res<PlayerAnimations>,
+) {
+    // Check if we have any newly added AnimationPlayers
+    for (anim_entity, mut player) in added_animation_players.iter_mut() {
+        // Check if this AnimationPlayer belongs to our PlayerModel by traversing up the hierarchy
+        if is_descendant_of_player_model(anim_entity, &player_model_query, &children_query) {
+            info!("🎬 Found AnimationPlayer in loaded scene! Entity: {:?}", anim_entity);
+            
+            // Insert the animation graph
+            commands.entity(anim_entity).insert(player_anims.graph.clone());
+            info!("✅ Animation graph inserted");
+            
+            // Play idle animation immediately
+            info!("▶️  Starting IDLE animation (index: {:?})", player_anims.idle_index);
+            player.play(player_anims.idle_index).repeat();
+            
+            // Add AnimationTransitions for smooth transitions
+            commands.entity(anim_entity).insert(AnimationTransitions::new());
+            
+            info!("🎉 Animation system initialized successfully!");
+            break;
+        }
+    }
+}
+
+/// Check if entity is a descendant of PlayerModel by recursively checking all PlayerModel children
+fn is_descendant_of_player_model(
+    entity: Entity,
+    player_model_query: &Query<Entity, With<PlayerModel>>,
+    children_query: &Query<&Children>,
+) -> bool {
+    for player_model_entity in player_model_query.iter() {
+        if is_descendant_of(entity, player_model_entity, children_query) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively check if 'entity' is a descendant of 'ancestor'
+fn is_descendant_of(
+    entity: Entity,
+    ancestor: Entity,
+    children_query: &Query<&Children>,
+) -> bool {
+    if entity == ancestor {
+        return true;
+    }
+    
+    if let Ok(children) = children_query.get(ancestor) {
+        for &child in children.iter() {
+            if is_descendant_of(entity, child, children_query) {
+                return true;
+            }
+        }
+    }
+    
+    false
+}
+
+/// Debug system to log scene hierarchy (runs once per PlayerModel)
+fn debug_scene_hierarchy(
+    player_model_query: Query<(Entity, &Children), (With<PlayerModel>, Without<PlayerAnimationState>)>,
+    children_query: Query<&Children>,
+    name_query: Query<&Name>,
+    animation_player_query: Query<&AnimationPlayer>,
+    mut commands: Commands,
+) {
+    for (player_model_entity, _) in player_model_query.iter() {
+        info!("🔍 === PLAYER MODEL SCENE HIERARCHY ===");
+        log_hierarchy(player_model_entity, 0, &children_query, &name_query, &animation_player_query);
+        info!("🔍 === END HIERARCHY ===");
+        
+        // Mark as debugged by adding PlayerAnimationState
+        commands.entity(player_model_entity).insert(PlayerAnimationState { is_moving: false });
+    }
+}
+
+/// Recursively log entity hierarchy
+fn log_hierarchy(
+    entity: Entity,
+    depth: usize,
+    children_query: &Query<&Children>,
+    name_query: &Query<&Name>,
+    animation_player_query: &Query<&AnimationPlayer>,
+) {
+    let indent = "  ".repeat(depth);
+    let name = name_query.get(entity)
+        .map(|n| n.as_str())
+        .unwrap_or("unnamed");
+    
+    let has_animation_player = animation_player_query.contains(entity);
+    let marker = if has_animation_player { "🎬" } else { "📦" };
+    
+    info!("{}{} Entity {:?}: \"{}\"", indent, marker, entity, name);
+    
+    if let Ok(children) = children_query.get(entity) {
+        for &child in children.iter() {
+            log_hierarchy(child, depth + 1, children_query, name_query, animation_player_query);
+        }
+    }
+}
+
+/// Update player animation based on movement
+fn update_player_animation(
+    mut player_query: Query<(&bevy_rapier3d::prelude::Velocity, &mut PlayerAnimationState), With<Player>>,
+    mut animation_players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+    player_anims: Res<PlayerAnimations>,
+) {
+    let Ok((velocity, mut anim_state)) = player_query.get_single_mut() else { return };
+    
+    // Check if player is moving based on velocity
+    let horizontal_speed = (velocity.linvel.x.powi(2) + velocity.linvel.z.powi(2)).sqrt();
+    let is_moving = horizontal_speed > 0.1;
+    
+    // Get animation player
+    if let Ok((mut player, mut transitions)) = animation_players.get_single_mut() {
+        // Only update animation if state changed
+        if is_moving != anim_state.is_moving {
+            anim_state.is_moving = is_moving;
+            
+            let target_index = if is_moving {
+                info!("Switching to WALK animation");
+                player_anims.walk_index
+            } else {
+                info!("Switching to IDLE animation");
+                player_anims.idle_index
+            };
+            
+            transitions
+                .play(&mut player, target_index, Duration::from_millis(250))
+                .repeat();
+        }
+    }
+}
 
 /// Send position updates to server periodically
 fn send_position_updates(
@@ -353,8 +579,8 @@ fn update_nameplate_marker_position(
     let Ok(player_transform) = player_query.get_single() else { return };
     
     for mut nameplate_transform in nameplate_query.iter_mut() {
-        // Keep nameplate 2.5 units above player
-        nameplate_transform.translation = player_transform.translation + Vec3::Y * 2.5;
+        // Keep nameplate 1.2 units above player (closer to head)
+        nameplate_transform.translation = player_transform.translation + Vec3::Y * 1.2;
     }
 }
 

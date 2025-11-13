@@ -27,6 +27,7 @@ struct PlayerState {
     id: u64,
     character: shared::CharacterData,
     character_id: i64,      // DB ID for saving
+    user_id: i64,           // User ID for session cleanup
     position: Vec3,
     dirty: bool,            // Position changed since last save?
     last_save: Instant,     // When was last DB save?
@@ -121,6 +122,7 @@ impl GameServer {
                     id: client_addr.to_string().len() as u64,
                     character: character.clone(),
                     character_id: 0, // Will be set when we integrate with SelectCharacter
+                    user_id: 0, // Legacy join - no user_id available
                     position: Vec3::new(0.0, 1.0, 0.0),
                     dirty: false,
                     last_save: Instant::now(),
@@ -154,9 +156,17 @@ impl GameServer {
                 let addr_str = client_addr.to_string();
                 log::info!("Player {} disconnecting", addr_str);
                 
-                // Save position before removing player
+                // Save position and cleanup session before removing player
                 if let Some(player) = self.players.get(&addr_str) {
                     self.save_player_position(player).await;
+                    
+                    // Remove user's session to allow re-login
+                    if player.user_id != 0 {
+                        let removed_count = self.session_manager.remove_user_sessions(player.user_id);
+                        if removed_count > 0 {
+                            log::info!("Removed {} session(s) for user_id {}", removed_count, player.user_id);
+                        }
+                    }
                 }
                 
                 self.players.remove(&addr_str);
@@ -276,6 +286,7 @@ impl GameServer {
                         id: client_addr.to_string().len() as u64, // Simple ID generation
                         character: character_data,
                         character_id,
+                        user_id,
                         position,
                         dirty: false,
                         last_save: Instant::now(),

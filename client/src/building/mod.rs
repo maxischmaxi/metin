@@ -7,14 +7,16 @@ pub mod details;
 pub mod decorations;
 pub mod mesh_combiner;
 pub mod optimized_spawner;
+pub mod medieval_kit;
 
 pub use meshes::*;
-pub use city::{spawn_city_buildings, spawn_building_with_floors};
+pub use city::spawn_city_buildings;
 pub use floors::*;
 pub use details::*;
 pub use decorations::*;
 pub use mesh_combiner::*;
 pub use optimized_spawner::*;
+pub use medieval_kit::*;
 
 /// Building plugin for enhanced medieval buildings
 pub struct BuildingPlugin;

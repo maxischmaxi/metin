@@ -1093,6 +1093,7 @@ fn setup_pause_menu_overlay(
                 display: if pause_state.visible { Display::Flex } else { Display::None },
                 ..default()
             },
+            z_index: ZIndex::Global(500), // Above nameplates (100) and game UI (200)
             ..default()
         },
         PauseMenuOverlay,
@@ -1345,6 +1346,7 @@ fn setup_settings_menu_overlay(
                 display: if settings_state.visible { Display::Flex } else { Display::None },
                 ..default()
             },
+            z_index: ZIndex::Global(500), // Above nameplates (100) and game UI (200)
             ..default()
         },
         SettingsMenuOverlay,

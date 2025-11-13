@@ -85,7 +85,7 @@ fn spawn_npc_dialog(
                 ..default()
             },
             background_color: Color::srgba(0.0, 0.0, 0.0, 0.6).into(),
-            z_index: ZIndex::Global(200),
+            z_index: ZIndex::Global(400), // Above nameplates (100) but below pause/settings (500)
             ..default()
         },
         NpcDialogUI,

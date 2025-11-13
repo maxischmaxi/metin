@@ -49,6 +49,18 @@ impl SessionManager {
         self.sessions.insert(token, session);
     }
 
+    /// Check if a user is already logged in
+    pub fn is_user_logged_in(&self, user_id: i64) -> bool {
+        self.sessions.values().any(|s| s.user_id == user_id && !s.is_expired())
+    }
+
+    /// Remove all sessions for a specific user
+    pub fn remove_user_sessions(&mut self, user_id: i64) -> usize {
+        let before_count = self.sessions.len();
+        self.sessions.retain(|_, session| session.user_id != user_id);
+        before_count - self.sessions.len()
+    }
+
     /// Get session by token
     pub fn get_session(&self, token: &str) -> Option<&SessionData> {
         self.sessions.get(token)
@@ -121,5 +133,57 @@ mod tests {
         assert_eq!(session.character_id, None);
         session.set_character(5);
         assert_eq!(session.character_id, Some(5));
+    }
+
+    #[test]
+    fn test_is_user_logged_in() {
+        let mut manager = SessionManager::new();
+        
+        assert!(!manager.is_user_logged_in(1));
+        
+        let session = SessionData::new(1, "testuser".to_string(), "token123".to_string(), 24);
+        manager.add_session("token123".to_string(), session);
+        
+        assert!(manager.is_user_logged_in(1));
+        assert!(!manager.is_user_logged_in(2));
+    }
+
+    #[test]
+    fn test_remove_user_sessions() {
+        let mut manager = SessionManager::new();
+        
+        // Add multiple sessions for same user
+        let session1 = SessionData::new(1, "testuser".to_string(), "token1".to_string(), 24);
+        let session2 = SessionData::new(1, "testuser".to_string(), "token2".to_string(), 24);
+        let session3 = SessionData::new(2, "otheruser".to_string(), "token3".to_string(), 24);
+        
+        manager.add_session("token1".to_string(), session1);
+        manager.add_session("token2".to_string(), session2);
+        manager.add_session("token3".to_string(), session3);
+        
+        assert_eq!(manager.active_sessions_count(), 3);
+        
+        // Remove all sessions for user 1
+        let removed = manager.remove_user_sessions(1);
+        assert_eq!(removed, 2);
+        assert_eq!(manager.active_sessions_count(), 1);
+        assert!(!manager.is_user_logged_in(1));
+        assert!(manager.is_user_logged_in(2));
+    }
+
+    #[test]
+    fn test_duplicate_login_prevention() {
+        let mut manager = SessionManager::new();
+        
+        // User 1 logs in
+        let session1 = SessionData::new(1, "testuser".to_string(), "token1".to_string(), 24);
+        manager.add_session("token1".to_string(), session1);
+        
+        // Check if user is logged in
+        assert!(manager.is_user_logged_in(1));
+        
+        // Simulate duplicate login attempt - should fail in handler
+        // This test just validates the is_user_logged_in function works correctly
+        assert!(manager.is_user_logged_in(1));
     }
 }

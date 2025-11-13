@@ -107,6 +107,14 @@ pub async fn handle_login(
         }
     }
 
+    // Check if user is already logged in
+    if session_manager.is_user_logged_in(user.id) {
+        log::warn!("User '{}' attempted to login while already logged in", username);
+        return AuthResponse::LoginFailed {
+            reason: "This account is already logged in. Please logout first or wait a few minutes.".to_string(),
+        };
+    }
+
     // Update last login
     if let Err(e) = db::users::update_last_login(pool, user.id).await {
         log::error!("Error updating last login: {}", e);
